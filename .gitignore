@@ -1,0 +1,28 @@
+# Local Hermes runtime state / secrets — never commit
+.hermes/
+*.pid
+*.log
+
+# Real answer files with secrets (only the *.example / *.browser-on templates are tracked)
+answers.env
+answers.local.env
+test/answers.env
+test/answers.local.env
+*.secret.env
+
+# Language / tooling caches
+__pycache__/
+*.pyc
+*.pyo
+
+# OS & editor cruft
+.DS_Store
+Thumbs.db
+*.swp
+*~
+.idea/
+.vscode/
+
+# Local development notes & planning docs (Polish working artifacts, kept out of the shipped repo)
+NOTES.md
+docs/plans/

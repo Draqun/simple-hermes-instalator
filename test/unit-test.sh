@@ -1,0 +1,124 @@
+#!/usr/bin/env bash
+#
+# unit-test.sh — fast, host-side unit tests for the pure helpers and render
+# functions. No Docker, no network, no Hermes required.
+#
+set -uo pipefail
+REPO_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." >/dev/null 2>&1 && pwd)"
+export NO_COLOR=1
+
+# shellcheck source=/dev/null
+source "$REPO_DIR/lib/common.sh"
+# shellcheck source=/dev/null
+source "$REPO_DIR/lib/capability.sh"
+# shellcheck source=/dev/null
+source "$REPO_DIR/lib/mikrus.sh"
+# shellcheck source=/dev/null
+source "$REPO_DIR/lib/webui.sh"
+# shellcheck source=/dev/null
+source "$REPO_DIR/lib/provider.sh"
+
+PASS=0; FAIL=0
+ok()  { printf '  \033[32mPASS\033[0m %s\n' "$*"; PASS=$((PASS+1)); return 0; }
+bad() { printf '  \033[31mFAIL\033[0m %s\n' "$*"; FAIL=$((FAIL+1)); return 0; }
+sec() { printf '\033[36m==>\033[0m %s\n' "$*"; }
+has() { grep -qF -- "$2" <<<"$1" && ok "$3" || bad "$3"; }
+hasre() { grep -qE -- "$2" <<<"$1" && ok "$3" || bad "$3"; }
+
+TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
+
+sec "set_env_var: write, replace, mode 600"
+ENVF="$TMP/.env"
+set_env_var "$ENVF" FOO bar
+set_env_var "$ENVF" BAZ qux
+set_env_var "$ENVF" FOO bar2   # replace
+grep -q '^FOO=bar2$' "$ENVF" && ok "replaces existing key" || bad "did not replace key"
+grep -q '^BAZ=qux$' "$ENVF" && ok "keeps other keys" || bad "lost other key"
+[[ "$(grep -c '^FOO=' "$ENVF")" == "1" ]] && ok "no duplicate keys" || bad "duplicate key left"
+perm="$(stat -c '%a' "$ENVF")"; [[ "$perm" == "600" ]] && ok "file mode 600 (was $perm)" || bad "file mode $perm (want 600)"
+
+sec "gen_password: strong-ish, no whitespace"
+p="$(gen_password)"
+[[ -n "$p" ]] && ok "non-empty" || bad "empty"
+[[ ${#p} -ge 16 ]] && ok "length >= 16 (${#p})" || bad "too short (${#p})"
+[[ "$p" != *" "* && "$p" != *$'\n'* ]] && ok "no whitespace" || bad "contains whitespace"
+
+sec "ask_menu / ask: non-interactive resolution"
+HERMES_INSTALL_NONINTERACTIVE=1
+ANS_PROV="Anthropic"; ask_menu PROV "pick" "OpenRouter" "Anthropic" "Custom"
+[[ "$PROV" == "Anthropic" ]] && ok "matches option by name" || bad "got '$PROV'"
+ANS_PROV2="3"; ask_menu PROV2 "pick" "OpenRouter" "Anthropic" "Custom"
+[[ "$PROV2" == "Custom" ]] && ok "matches option by index" || bad "got '$PROV2'"
+ANS_CITY=""; ask CITY "town" "Helsinki"
+[[ "$CITY" == "Helsinki" ]] && ok "falls back to default" || bad "got '$CITY'"
+unset HERMES_INSTALL_NONINTERACTIVE
+
+sec "render_nginx_site"
+NG="$(render_nginx_site 20123 8787 emil123)"
+has "$NG" "listen [::]:20123;" "listens on IPv6 (mikrus.cloud requirement)"
+has "$NG" "listen 20123;" "listens on IPv4 (wykr.es requirement)"
+has "$NG" "proxy_pass http://127.0.0.1:8787;" "proxies to loopback WebUI"
+has "$NG" "emil123-20123.wykr.es" "server_name has wykr.es"
+has "$NG" "emil123-20123.mikrus.cloud" "server_name has mikrus.cloud"
+has "$NG" "proxy_buffering off;" "SSE-friendly (no buffering)"
+
+sec "mikrus port + URL helpers"
+MIKRUS_ID=123
+[[ "$(mikrus_default_public_port)" == "20123" ]] && ok "default port = 20000+ID" || bad "wrong default port"
+U="$(mikrus_public_urls emil123 20123)"
+has "$U" "https://emil123-20123.wykr.es" "wykr.es URL"
+has "$U" "https://emil123-20123.mikrus.cloud" "mikrus.cloud URL"
+
+sec "systemd units + hardening"
+GU="$(render_gateway_unit root /root)"
+has "$GU" "ExecStart=/root/.local/bin/hermes gateway run" "gateway ExecStart"
+has "$GU" "NoNewPrivileges=yes" "gateway: NoNewPrivileges"
+has "$GU" "ProtectSystem=strict" "gateway: ProtectSystem=strict"
+has "$GU" "ReadWritePaths=/root/.hermes /root/workspace" "gateway: ReadWritePaths scoped"
+has "$GU" "Restart=on-failure" "gateway: restarts on failure"
+WU="$(render_webui_unit root /root /root/.hermes/.env /root/.hermes/hermes-webui)"
+has "$WU" "After=network-online.target hermes-gateway.service" "webui starts after gateway"
+has "$WU" "EnvironmentFile=/root/.hermes/.env" "webui: env file wired"
+has "$WU" "NoNewPrivileges=yes" "webui: NoNewPrivileges"
+
+sec "provider: _write_model_block (config.yaml generation)"
+CFG="$TMP/config.yaml"
+_write_model_block "$CFG" openrouter "anthropic/claude-sonnet-4.6"
+has "$(cat "$CFG")" "provider: openrouter" "fresh file: provider written"
+has "$(cat "$CFG")" 'default: "anthropic/claude-sonnet-4.6"' "fresh file: model default written"
+# Replace the block; must not duplicate model: and must switch provider.
+_write_model_block "$CFG" anthropic "claude-opus-4-6"
+[[ "$(grep -c '^model:' "$CFG")" == "1" ]] && ok "no duplicate model: block after replace" || bad "duplicate model: block"
+has "$(cat "$CFG")" "provider: anthropic" "replaced provider"
+grep -q 'openrouter' "$CFG" && bad "old provider lingered" || ok "old provider removed"
+# Custom endpoint with extra keys + preserve surrounding content.
+printf 'terminal:\n  backend: local\n' >> "$CFG"
+_write_model_block "$CFG" custom "my-model" 'base_url: "http://127.0.0.1:8000/v1"' 'key_env: HERMES_CUSTOM_API_KEY'
+has "$(cat "$CFG")" 'base_url: "http://127.0.0.1:8000/v1"' "custom: base_url extra line"
+has "$(cat "$CFG")" "key_env: HERMES_CUSTOM_API_KEY" "custom: key_env extra line"
+has "$(cat "$CFG")" "backend: local" "preserved unrelated (terminal) config"
+perm="$(stat -c '%a' "$CFG")"; [[ "$perm" == "600" ]] && ok "config.yaml mode 600" || bad "config.yaml mode $perm"
+# Regression: inline mapping form must be stripped (no duplicate model:).
+CFG2="$TMP/config2.yaml"
+printf 'model: {provider: openrouter, default: "old"}\nterminal:\n  backend: local\n' > "$CFG2"
+_write_model_block "$CFG2" anthropic "claude-opus-4-6"
+[[ "$(grep -c '^model:' "$CFG2")" == "1" ]] && ok "inline model: stripped (no duplicate)" || bad "inline model: left a duplicate"
+has "$(cat "$CFG2")" "backend: local" "inline case: preserved other keys"
+# Regression: commented header form.
+CFG3="$TMP/config3.yaml"
+printf 'model:  # main config\n  provider: openrouter\n  default: "old"\nx: 1\n' > "$CFG3"
+_write_model_block "$CFG3" anthropic "claude-opus-4-6"
+[[ "$(grep -c '^model:' "$CFG3")" == "1" ]] && ok "commented model: stripped (no duplicate)" || bad "commented model: left a duplicate"
+grep -q 'old' "$CFG3" && bad "commented case: stale model lingered" || ok "commented case: stale model removed"
+
+sec "webui_set_password: reuse existing on empty answer (idempotency)"
+EF="$TMP/webui.env"; : > "$EF"; chmod 600 "$EF"
+set_env_var "$EF" HERMES_WEBUI_PASSWORD "keepme123"
+HERMES_INSTALL_NONINTERACTIVE=1; ANS_HERMES_WEBUI_PASSWORD=""
+webui_set_password "$EF" >/dev/null 2>&1
+grep -q '^HERMES_WEBUI_PASSWORD=keepme123$' "$EF" && ok "kept existing password on empty re-run" || bad "password changed on re-run"
+unset HERMES_INSTALL_NONINTERACTIVE ANS_HERMES_WEBUI_PASSWORD
+
+echo
+sec "Result: ${PASS} PASS / ${FAIL} FAIL"
+(( FAIL == 0 ))
