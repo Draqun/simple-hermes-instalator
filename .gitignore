@@ -23,6 +23,5 @@ Thumbs.db
 .idea/
 .vscode/
 
-# Local development notes & planning docs (Polish working artifacts, kept out of the shipped repo)
+# Local development notes (Polish working scratchpad, kept out of the shipped repo)
 NOTES.md
-docs/plans/
