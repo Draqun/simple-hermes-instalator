@@ -60,7 +60,9 @@ ask() {
 }
 
 # ask_secret VARNAME "prompt"
-# Reads without echo; never appears on screen or in history.
+# Reads without echo; never appears on screen or in history. Because the input
+# is hidden, we echo a confirmation of the captured LENGTH (never the value) so
+# the user knows their paste registered — an empty paste is otherwise silent.
 ask_secret() {
   local __var="$1" __prompt="$2" __reply=""
   if is_noninteractive; then
@@ -68,6 +70,11 @@ ask_secret() {
   else
     read -r -s -p "$(printf '%s: ' "$__prompt")" __reply </dev/tty || true
     printf '\n' >&2
+    if [[ -n "$__reply" ]]; then
+      printf '%s  ✔ captured %d characters (hidden)%s\n' "$C_DIM" "${#__reply}" "$C_RESET" >&2
+    else
+      printf '%s  ⚠ nothing captured — the field is empty%s\n' "$C_YEL" "$C_RESET" >&2
+    fi
   fi
   printf -v "$__var" '%s' "$__reply"
 }

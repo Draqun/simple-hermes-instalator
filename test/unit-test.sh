@@ -111,6 +111,21 @@ _write_model_block "$CFG3" anthropic "claude-opus-4-6"
 [[ "$(grep -c '^model:' "$CFG3")" == "1" ]] && ok "commented model: stripped (no duplicate)" || bad "commented model: left a duplicate"
 grep -q 'old' "$CFG3" && bad "commented case: stale model lingered" || ok "commented case: stale model removed"
 
+sec "provider: strip model block with blank lines + comments (corruption regression)"
+CFG4="$TMP/config4.yaml"
+printf 'top_key: 1\n\n# Model Configuration\nmodel:\n  # inference provider selection\n  provider: "auto"\n\n  default: "old-model"\n  base_url: "https://old"\nterminal:\n  backend: local\n' > "$CFG4"
+_write_model_block "$CFG4" gemini "gemini-3-flash"
+[[ "$(grep -c '^model:' "$CFG4")" == "1" ]] && ok "single model: block after replace" || bad "duplicate model: block"
+grep -qE '^[[:space:]]+provider: "auto"' "$CFG4" && bad "orphaned old model lines remain" || ok "no orphaned indented lines left"
+grep -q 'old-model' "$CFG4" && bad "old model value lingered" || ok "old model value removed"
+has "$(cat "$CFG4")" "backend: local" "preserved trailing section (terminal)"
+has "$(cat "$CFG4")" "top_key: 1" "preserved leading key"
+if command -v python3 >/dev/null && python3 -c 'import yaml' 2>/dev/null; then
+  python3 -c "import yaml; yaml.safe_load(open('$CFG4'))" 2>/dev/null && ok "result parses as valid YAML" || bad "result is INVALID YAML"
+else
+  echo "  (python3+yaml unavailable — skipping YAML validity check)"
+fi
+
 sec "webui_set_password: reuse existing on empty answer (idempotency)"
 EF="$TMP/webui.env"; : > "$EF"; chmod 600 "$EF"
 set_env_var "$EF" HERMES_WEBUI_PASSWORD "keepme123"

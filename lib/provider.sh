@@ -27,15 +27,21 @@ _write_model_block() {
   local tmp; tmp="$(mktemp "${file}.XXXXXX")"
   chmod 600 "$tmp"
   if [[ -f "$file" ]]; then
-    # Strip an existing top-level `model:` entry. Matches block form
-    # ("model:\n  key: ...") AND inline/commented forms ("model: {...}",
-    # "model:  # note") — for the latter there are no indented continuation
-    # lines, so only the single line is dropped.
+    # Strip an existing top-level `model:` entry, then we append a fresh one.
+    # Once inside the block (after a line starting with "model:") we drop every
+    # following line — blank lines, indented values AND indented comments alike —
+    # until the next line that begins in column 0 (the next top-level key), which
+    # ends the block. This correctly handles block form, inline "model: {...}",
+    # a "model:  # note" header, and (crucially) blank lines *within* the block —
+    # the previous version stopped at the first blank line and orphaned the rest,
+    # producing invalid YAML.
     awk '
-      /^model:/ {skip=1; next}
-      skip==1 && /^[[:space:]]+[^[:space:]]/ {next}
-      skip==1 {skip=0}
-      {print}
+      skip==1 {
+        if ($0 ~ /^[^[:space:]]/) { skip=0; print; next }
+        next
+      }
+      /^model:/ { skip=1; next }
+      { print }
     ' "$file" > "$tmp"
   else
     printf '# Hermes config — managed by install-hermes-mikrus.sh\n' > "$tmp"

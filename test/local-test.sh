@@ -120,6 +120,10 @@ full_test() {
         [ "$code" = "200" ] && break; sleep 2
       done
       echo "___HEALTH=$code"
+      # Config must parse — the awk model-block strip runs against the real
+      # upstream cli-config.yaml.example, which has blank lines inside the block.
+      hermes config show >/tmp/cfg.txt 2>&1
+      grep -q "Failed to parse" /tmp/cfg.txt && echo "___CONFIG=BAD" || echo "___CONFIG=OK"
       echo "___MEM_BYTES=$(cat /sys/fs/cgroup/memory.current 2>/dev/null || echo 0)"
       echo "___INSTALL_LOG_TAIL___"; tail -15 /tmp/install.log
       echo "___WEBUI_LOG_TAIL___"; tail -15 /tmp/webui.log 2>/dev/null
@@ -129,6 +133,7 @@ full_test() {
   grep -q '___HERMES=' <<<"$out" && ok "hermes binary installed" || bad "hermes binary missing"
   grep -q '___AGENTDIR=' <<<"$out" && ok "agent code dir present" || bad "agent code dir missing"
   grep -q '___HEALTH=200' <<<"$out" && ok "WebUI /health returned 200" || bad "WebUI /health not 200"
+  grep -q '___CONFIG=OK' <<<"$out" && ok "config.yaml parses cleanly (model block intact)" || bad "config.yaml failed to parse"
   local mem; mem="$(grep -oE '___MEM_BYTES=[0-9]+' <<<"$out" | cut -d= -f2)"
   if [[ -n "$mem" && "$mem" -gt 0 ]]; then
     local mb=$(( mem / 1024 / 1024 ))
