@@ -163,6 +163,9 @@ bash test/local-test.sh --full  # real end-to-end install + /health probe (slow)
   local test verifies the installer, footprint, and that the stack serves `/health`.
 - Autostart needs real systemd (present on Mikrus). Without it, start the WebUI with
   `~/.hermes/hermes-webui/ctl.sh start`.
+- **Switching provider from the WebUI Settings may not persist** to `config.yaml` for cross-provider
+  model IDs (upstream bug [nesquena/hermes-webui#6131](https://github.com/nesquena/hermes-webui/issues/6131)).
+  Workaround: switch providers with `hermes model` (or edit `~/.hermes/config.yaml` directly).
 
 ## License
 
