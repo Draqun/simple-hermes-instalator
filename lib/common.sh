@@ -138,6 +138,21 @@ ask_menu() {
 have_cmd() { command -v "$1" >/dev/null 2>&1; }
 require_cmd() { have_cmd "$1" || die "Missing required command: $1"; }
 
+# Run "$@" as $SERVICE_USER (a dedicated non-root service account). Defaults to
+# the current user, so it is a safe no-op when installing for the invoking user
+# and in tests. Used to run the agent, WebUI and hermes CLI without root.
+as_user() {
+  local u="${SERVICE_USER:-}"; [[ -z "$u" ]] && u="$(id -un)"
+  if [[ "$u" == "$(id -un)" ]]; then
+    "$@"
+  elif have_cmd runuser; then
+    runuser -u "$u" -- "$@"
+  else
+    local q; printf -v q '%q ' "$@"
+    su -s /bin/bash "$u" -c "$q"
+  fi
+}
+
 # Secure HTTPS download to stdout (TLS 1.2+, https only, fail on error).
 fetch() {
   local url="$1"

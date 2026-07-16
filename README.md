@@ -78,6 +78,8 @@ You will be asked about your AI provider + key, optional messaging bridges, and 
 | `--reconfigure` | Re-run the wizard without reinstalling. |
 | `--uninstall` | Remove the stack (keeps data unless `--purge`). |
 | `--force` | Proceed despite capability warnings. |
+| `--service-user N` | Run the agent/WebUI/gateway as account `N` (default `hermes` when installing as root). |
+| `--as-root` | Do **not** drop to a service user; run as root (not recommended). |
 | `--answers FILE` | Non-interactive; read answers from an `ANS_*` file (see `test/answers.example.env`). |
 
 ## Exposure on Mikrus
@@ -112,10 +114,10 @@ If `wykr.es` doesn't resolve, confirm the port is allocated in the Mikrus panel.
 - systemd units are hardened (`NoNewPrivileges`, `ProtectSystem=strict`, `PrivateTmp`,
   `ReadWritePaths` scoped to `~/.hermes`).
 - Browser tools default off — less memory, smaller attack surface.
-
-> **Note on root:** Mikrus gives you root in an *unprivileged* LXC container. The installer follows
-> Mikrus conventions (root + system units) and relies on the systemd hardening above. A dedicated
-> service user is a reasonable future hardening step.
+- **Runs as a dedicated non-root user.** When launched as root, the installer creates a `hermes`
+  service account and runs the agent, WebUI and gateway as it (systemd `User=hermes`). Hermes is an
+  autonomous agent *with a shell tool*, so a compromise (or prompt injection) is contained to that
+  account instead of root. Override with `--as-root`, or pick a name with `--service-user NAME`.
 
 ## Updating / uninstalling
 

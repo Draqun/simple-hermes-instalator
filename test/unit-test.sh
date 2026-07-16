@@ -81,6 +81,12 @@ has "$WU" "After=network-online.target hermes-gateway.service" "webui starts aft
 has "$WU" "EnvironmentFile=/root/.hermes/.env" "webui: env file wired"
 has "$WU" "NoNewPrivileges=yes" "webui: NoNewPrivileges"
 
+sec "systemd unit for a dedicated (non-root) service user"
+GU2="$(render_gateway_unit hermes /home/hermes /home/hermes/.local/bin/hermes)"
+has "$GU2" "User=hermes" "gateway runs as hermes (not root)"
+has "$GU2" "ExecStart=/home/hermes/.local/bin/hermes gateway run" "gateway uses the service user's bin"
+has "$GU2" "ReadWritePaths=/home/hermes/.hermes /home/hermes/workspace" "RW paths scoped to hermes home"
+
 sec "provider: _write_model_block (config.yaml generation)"
 CFG="$TMP/config.yaml"
 _write_model_block "$CFG" openrouter "anthropic/claude-sonnet-4.6"

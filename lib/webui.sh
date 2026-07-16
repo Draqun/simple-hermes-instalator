@@ -63,6 +63,7 @@ webui_configure() {
 
 render_gateway_unit() {
   local user="$1" home="$2"
+  local bin="${3:-$home/.local/bin/hermes}"
   cat <<EOF
 [Unit]
 Description=Hermes agent gateway (messaging bridges + scheduled jobs)
@@ -73,7 +74,7 @@ Wants=network-online.target
 Type=simple
 User=${user}
 Environment=HERMES_HOME=${home}/.hermes
-ExecStart=${home}/.local/bin/hermes gateway run
+ExecStart=${bin} gateway run
 Restart=on-failure
 RestartSec=5
 # --- hardening ---
@@ -152,15 +153,16 @@ systemd_running() { [[ -d /run/systemd/system ]] && have_cmd systemctl; }
 # Install + enable + start both services (root, system units).
 webui_install_services() {
   local user="$1" home="$2" env_file="$3"
+  local bin="${4:-$home/.local/bin/hermes}"
   local dir; dir="$(webui_dir)"
   if ! systemd_running; then
     log_warn "systemd not running here — services not installed."
-    log_info "Start the WebUI manually with: $dir/ctl.sh start   (and 'hermes gateway run' for bridges)."
+    log_info "Start the WebUI manually with: $dir/ctl.sh start   (and '$bin gateway run' for bridges)."
     return 0
   fi
   local ud="/usr/lib/systemd/system"
   [[ -d "$ud" ]] || ud="/etc/systemd/system"
-  render_gateway_unit "$user" "$home"                   > "$ud/hermes-gateway.service"
+  render_gateway_unit "$user" "$home" "$bin"            > "$ud/hermes-gateway.service"
   render_webui_unit   "$user" "$home" "$env_file" "$dir" > "$ud/hermes-webui.service"
   systemctl daemon-reload || { log_warn "daemon-reload failed."; return 1; }
   systemctl enable --now hermes-gateway.service 2>/dev/null || log_warn "Could not start hermes-gateway."

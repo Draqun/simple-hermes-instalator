@@ -155,9 +155,10 @@ configure_provider() {
 # Best-effort post-install validation. `hermes doctor` never signals via exit
 # code (always 0), so we parse its stdout instead.
 validate_provider_config() {
-  have_cmd hermes || return 0
+  local bin="${HERMES_BIN:-hermes}"
+  [[ -x "$bin" ]] || as_user command -v "$bin" >/dev/null 2>&1 || return 0
   log_step "Validating configuration (hermes doctor)"
-  local out; out="$(hermes doctor 2>&1 || true)"
+  local out; out="$(as_user "$bin" doctor 2>&1 || true)"
   printf '%s\n' "$out" | grep -E '✗|not a recognised|no API key|missing|issue' | sed 's/^/  /' >&2 || true
   if grep -qE 'All checks passed|🎉|API key or custom endpoint configured' <<<"$out"; then
     log_ok "hermes doctor: provider/key looks configured."

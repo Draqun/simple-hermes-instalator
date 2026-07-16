@@ -15,6 +15,10 @@
 #   --dry-run        Run the wizard + write config, but skip the heavy install.
 #   --force          Proceed even if the capability check fails (test the limits).
 #   --answers FILE   Non-interactive mode; read answers from FILE (ANS_* vars).
+#   --service-user N Run the agent/WebUI/gateway as this account (default: hermes
+#                    when installing as root). Created if missing.
+#   --as-root        Do NOT drop to a service user; run as root (not recommended —
+#                    the agent has a shell tool, so root = full blast radius).
 #   -h, --help       Show this help.
 
 set -euo pipefail
@@ -31,11 +35,14 @@ done
 MODE="install"
 FORCE="no"
 ANSWERS_FILE=""
-
-HERMES_HOME="${HERMES_HOME:-${HOME:?HOME must be set (or pass HERMES_HOME)}/.hermes}"
-CONFIG_YAML="$HERMES_HOME/config.yaml"
-ENV_FILE="$HERMES_HOME/.env"
+AS_ROOT="no"
+SERVICE_USER=""
 INSTALLER_URL="https://hermes-agent.nousresearch.com/install.sh"
+# SERVICE_HOME / HERMES_HOME / CONFIG_YAML / ENV_FILE / HERMES_BIN are set by
+# resolve_identity() (they depend on the resolved service user).
+SERVICE_HOME=""
+HERMES_HOME="${HERMES_HOME:-}"
+HERMES_BIN="hermes"
 
 usage() { sed -n '2,40p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
 
@@ -50,6 +57,9 @@ parse_args() {
       --force)       FORCE="yes" ;;
       --answers)     shift; ANSWERS_FILE="${1:-}" ;;
       --answers=*)   ANSWERS_FILE="${1#*=}" ;;
+      --as-root)     AS_ROOT="yes" ;;
+      --service-user) shift; SERVICE_USER="${1:-}" ;;
+      --service-user=*) SERVICE_USER="${1#*=}" ;;
       -h|--help)     usage; exit 0 ;;
       *)             die "Unknown flag: $1 (use --help)" ;;
     esac
@@ -79,6 +89,66 @@ banner() {
 }
 
 # ---------------------------------------------------------------------------
+# Service identity (run as a dedicated non-root user by default)
+# ---------------------------------------------------------------------------
+
+# Decide which account runs Hermes and derive all its paths. SERVICE_USER is
+# read by as_user() to run steps unprivileged. When we're root and the operator
+# didn't pass --as-root, we default to a dedicated 'hermes' account so the
+# agent's shell/browser tools never run as root.
+resolve_identity() {
+  local cur; cur="$(id -un)"
+  if [[ "$(id -u)" == "0" && "$AS_ROOT" != "yes" ]]; then
+    SERVICE_USER="${SERVICE_USER:-hermes}"
+  else
+    SERVICE_USER="${SERVICE_USER:-$cur}"
+  fi
+  if [[ "$SERVICE_USER" == "$cur" ]]; then
+    SERVICE_HOME="${HOME:?HOME must be set (or pass HERMES_HOME)}"
+  else
+    # getent exits 2 when the user does not exist yet — guard so `set -e`/pipefail
+    # does not abort here (the user is created later by ensure_service_user).
+    SERVICE_HOME="$(getent passwd "$SERVICE_USER" 2>/dev/null | cut -d: -f6 || true)"
+    SERVICE_HOME="${SERVICE_HOME:-/home/$SERVICE_USER}"
+  fi
+  HERMES_HOME="${HERMES_HOME:-$SERVICE_HOME/.hermes}"
+  CONFIG_YAML="$HERMES_HOME/config.yaml"
+  ENV_FILE="$HERMES_HOME/.env"
+  if [[ "$SERVICE_USER" != "$cur" ]]; then
+    log_info "Running Hermes as dedicated user '${SERVICE_USER}' (use --as-root to override)."
+  fi
+}
+
+# Create the service account if it does not exist (root only).
+ensure_service_user() {
+  [[ "$SERVICE_USER" == "$(id -un)" ]] && return 0
+  if id "$SERVICE_USER" &>/dev/null; then
+    log_ok "Service user '$SERVICE_USER' exists."
+  else
+    log_info "Creating service user '$SERVICE_USER'..."
+    useradd --create-home --shell /bin/bash "$SERVICE_USER" \
+      || die "Could not create service user '$SERVICE_USER' (need root)."
+  fi
+  SERVICE_HOME="$(getent passwd "$SERVICE_USER" | cut -d: -f6 || true)"
+  SERVICE_HOME="${SERVICE_HOME:-/home/$SERVICE_USER}"
+  HERMES_HOME="${HERMES_HOME:-$SERVICE_HOME/.hermes}"
+  CONFIG_YAML="$HERMES_HOME/config.yaml"; ENV_FILE="$HERMES_HOME/.env"
+}
+
+# Give the service user ownership of everything we wrote as root.
+fix_ownership() {
+  [[ "$SERVICE_USER" == "$(id -un)" ]] && return 0
+  chown -R "$SERVICE_USER":"$SERVICE_USER" "$HERMES_HOME" "$SERVICE_HOME/workspace" 2>/dev/null || true
+}
+
+# Resolve the hermes binary path for the resolved layout (per-user vs root FHS).
+resolve_hermes_bin() {
+  if   [[ -x "$SERVICE_HOME/.local/bin/hermes" ]]; then HERMES_BIN="$SERVICE_HOME/.local/bin/hermes"
+  elif [[ -x /usr/local/bin/hermes ]];            then HERMES_BIN="/usr/local/bin/hermes"
+  else HERMES_BIN="hermes"; fi
+}
+
+# ---------------------------------------------------------------------------
 # Steps
 # ---------------------------------------------------------------------------
 
@@ -88,6 +158,9 @@ ensure_prereqs() {
   for c in curl git; do have_cmd "$c" || missing+=("$c"); done
   # xz-utils provides `xz`, needed by the upstream installer on Linux.
   have_cmd xz || missing+=("xz-utils")
+  # The WebUI launcher (bootstrap.py / ctl.sh) needs a system python3 to boot
+  # before re-execing under the agent venv. Usually present on Mikrus.
+  have_cmd python3 || missing+=("python3")
   if (( ${#missing[@]} )); then
     log_info "Installing: ${missing[*]}"
     if have_cmd apt-get; then
@@ -101,7 +174,10 @@ ensure_prereqs() {
   log_ok "Prerequisites present."
 }
 
-agent_installed() { [[ -x "$HOME/.local/bin/hermes" || -x /usr/local/bin/hermes ]] || have_cmd hermes; }
+agent_installed() {
+  [[ -x "$SERVICE_HOME/.local/bin/hermes" || -x /usr/local/bin/hermes ]] && return 0
+  as_user command -v hermes >/dev/null 2>&1
+}
 
 # The upstream installer lays code out differently for root vs non-root:
 #   root  -> /usr/local/lib/hermes-agent   (data still in $HERMES_HOME)
@@ -143,10 +219,14 @@ install_agent() {
   # unless the user opted into browser tools.
   local -a flags=(--skip-setup)
   [[ "$BROWSER_ENABLED" != "yes" ]] && flags+=(--skip-browser)
-  bash "$tmp" "${flags[@]}" </dev/null || die "Hermes agent installer failed."
+  # Install AS the service user (per-user layout under its home), not root.
+  chmod 755 "$tmp"   # the public installer must be readable/executable by the service user
+  as_user env HOME="$SERVICE_HOME" HERMES_HOME="$HERMES_HOME" bash "$tmp" "${flags[@]}" </dev/null \
+    || die "Hermes agent installer failed."
   rm -f "$tmp"
+  resolve_hermes_bin
   agent_installed || die "Hermes binary not found after install."
-  log_ok "Hermes agent installed."
+  log_ok "Hermes agent installed (as ${SERVICE_USER})."
 }
 
 configure_stack() {
@@ -161,9 +241,9 @@ configure_stack() {
 }
 
 install_ui_and_services() {
-  # The systemd units grant ReadWritePaths=$HOME/workspace; make sure it exists
-  # (default WebUI workspace) or ProtectHome=read-only blocks the agent.
-  mkdir -p "$HOME/workspace"
+  # The systemd units grant ReadWritePaths=$SERVICE_HOME/workspace; make sure it
+  # exists (default WebUI workspace) or ProtectHome=read-only blocks the agent.
+  mkdir -p "$SERVICE_HOME/workspace"
   webui_clone_or_update || return 1
   # Point the WebUI at the actual agent code dir (root vs user layout differ).
   local agent_dir; agent_dir="$(detect_agent_dir)"
@@ -180,25 +260,30 @@ install_ui_and_services() {
   fi
   webui_set_password "$ENV_FILE"
   webui_configure "$ENV_FILE" 8787
-  local user; user="$(id -un)"
-  webui_install_services "$user" "$HOME" "$ENV_FILE"
+  # Hand everything to the service user BEFORE starting services so they run
+  # with the right ownership.
+  fix_ownership
+  webui_install_services "$SERVICE_USER" "$SERVICE_HOME" "$ENV_FILE" "$HERMES_BIN"
 }
 
 print_summary() {
   log_step "Done"
   log_ok "Hermes stack installed."
   [[ -n "${PUBLIC_URL:-}" ]] && log "  WebUI  : ${C_BOLD}${PUBLIC_URL}${C_RESET}"
+  log "  Runs as: ${C_BOLD}${SERVICE_USER}${C_RESET} (non-root)"
   log "  Config : $CONFIG_YAML"
   log "  Secrets: $ENV_FILE (mode 600)"
-  log "  Chat   : hermes"
+  local as_prefix=""
+  [[ "$SERVICE_USER" != "$(id -un)" ]] && as_prefix="runuser -u ${SERVICE_USER} -- "
+  log "  Chat   : ${as_prefix}$HERMES_BIN"
   if systemd_running; then
     log "  Services: systemctl status hermes-gateway hermes-webui"
     log "  Logs    : journalctl -u hermes-webui -f"
   else
     # No systemd (e.g. inside a container): the symlink above lets ctl.sh run
     # with no exported env vars.
-    log "  Start WebUI : $HERMES_HOME/hermes-webui/ctl.sh start"
-    log "  Start bridges: hermes gateway run"
+    log "  Start WebUI : ${as_prefix}$HERMES_HOME/hermes-webui/ctl.sh start"
+    log "  Start bridges: ${as_prefix}$HERMES_BIN gateway run"
   fi
 }
 
@@ -216,14 +301,17 @@ do_install() {
     return 0
   fi
   ensure_prereqs
+  ensure_service_user
   install_agent
   local CONTINUE_CONFIG=""
   ask_yesno CONTINUE_CONFIG "Agent installed. Continue with configuration (AI provider, bridges, WebUI)?" Y
   if [[ "$CONTINUE_CONFIG" != "yes" ]]; then
+    fix_ownership
     log_info "Stopping after agent install. Configure later with:  bash $SCRIPT_DIR/install-hermes-mikrus.sh --reconfigure"
     exit 0
   fi
   configure_stack
+  fix_ownership              # hand config to the service user so 'hermes doctor' can read it
   validate_provider_config
   install_ui_and_services
   mikrus_expose_webui 8787 || log_warn "Exposure step incomplete — see notes above."
@@ -239,8 +327,10 @@ do_reconfigure() {
   configure_stack
   webui_set_password "$ENV_FILE"
   webui_configure "$ENV_FILE" 8787
-  if have_cmd systemctl; then systemctl restart hermes-gateway hermes-webui 2>/dev/null || true; fi
-  log_ok "Reconfigured. Services restarted."
+  fix_ownership
+  validate_provider_config
+  if systemd_running; then systemctl restart hermes-gateway hermes-webui 2>/dev/null || true; fi
+  log_ok "Reconfigured${SERVICE_USER:+ (runs as $SERVICE_USER)}."
 }
 
 do_update() {
@@ -261,12 +351,18 @@ do_update() {
   log_info "Upgrading the agent (re-running the official installer)..."
   local -a uflags=(--skip-setup)
   grep -q '^HERMES_ENABLE_BROWSER_TOOLS=true' "$ENV_FILE" 2>/dev/null || uflags+=(--skip-browser)
-  local tmp; tmp="$(mktemp)"
-  fetch "$INSTALLER_URL" > "$tmp" && bash "$tmp" "${uflags[@]}" </dev/null || log_warn "Agent update step failed."
+  local tmp; tmp="$(mktemp)"; chmod 755 "$tmp"
+  if fetch "$INSTALLER_URL" > "$tmp"; then
+    as_user env HOME="$SERVICE_HOME" HERMES_HOME="$HERMES_HOME" bash "$tmp" "${uflags[@]}" </dev/null \
+      || log_warn "Agent update step failed."
+  else
+    log_warn "Could not download the installer."
+  fi
   rm -f "$tmp"
   webui_clone_or_update || log_warn "WebUI update step failed."
+  fix_ownership
 
-  if have_cmd systemctl; then
+  if systemd_running; then
     systemctl daemon-reload 2>/dev/null || true
     systemctl restart hermes-gateway hermes-webui 2>/dev/null || true
   fi
@@ -288,6 +384,10 @@ main() {
   parse_args "$@"
   load_answers
   banner
+  # Dry run must not create a system account or write into another user's home.
+  [[ "$MODE" == "dryrun" ]] && AS_ROOT="yes"
+  resolve_identity
+  resolve_hermes_bin
 
   case "$MODE" in
     check)       detect_capabilities; report_capabilities "$FORCE"; exit $? ;;
