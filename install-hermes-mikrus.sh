@@ -169,6 +169,11 @@ install_ui_and_services() {
   local agent_dir; agent_dir="$(detect_agent_dir)"
   if [[ -n "$agent_dir" ]]; then
     set_env_var "$ENV_FILE" HERMES_WEBUI_AGENT_DIR "$agent_dir"
+    # Symlink so the WebUI's own auto-discovery ($HERMES_HOME/hermes-agent) works
+    # with ZERO environment variables — no manual `export` needed to run ctl.sh.
+    if [[ "$agent_dir" != "$HERMES_HOME/hermes-agent" && ! -e "$HERMES_HOME/hermes-agent" ]]; then
+      ln -s "$agent_dir" "$HERMES_HOME/hermes-agent" && log_ok "Linked $HERMES_HOME/hermes-agent → $agent_dir"
+    fi
     log_ok "WebUI will use agent at: $agent_dir"
   else
     log_warn "Could not locate the agent code dir — WebUI auto-discovery may fail."
@@ -182,11 +187,19 @@ install_ui_and_services() {
 print_summary() {
   log_step "Done"
   log_ok "Hermes stack installed."
-  [[ -n "${PUBLIC_URL:-}" ]] && log "  WebUI: ${C_BOLD}${PUBLIC_URL}${C_RESET}"
+  [[ -n "${PUBLIC_URL:-}" ]] && log "  WebUI  : ${C_BOLD}${PUBLIC_URL}${C_RESET}"
   log "  Config : $CONFIG_YAML"
   log "  Secrets: $ENV_FILE (mode 600)"
-  log "  Services: systemctl status hermes-gateway hermes-webui"
-  log "  Logs   : journalctl -u hermes-webui -f"
+  log "  Chat   : hermes"
+  if systemd_running; then
+    log "  Services: systemctl status hermes-gateway hermes-webui"
+    log "  Logs    : journalctl -u hermes-webui -f"
+  else
+    # No systemd (e.g. inside a container): the symlink above lets ctl.sh run
+    # with no exported env vars.
+    log "  Start WebUI : $HERMES_HOME/hermes-webui/ctl.sh start"
+    log "  Start bridges: hermes gateway run"
+  fi
 }
 
 do_install() {
@@ -204,6 +217,12 @@ do_install() {
   fi
   ensure_prereqs
   install_agent
+  local CONTINUE_CONFIG=""
+  ask_yesno CONTINUE_CONFIG "Agent installed. Continue with configuration (AI provider, bridges, WebUI)?" Y
+  if [[ "$CONTINUE_CONFIG" != "yes" ]]; then
+    log_info "Stopping after agent install. Configure later with:  bash $SCRIPT_DIR/install-hermes-mikrus.sh --reconfigure"
+    exit 0
+  fi
   configure_stack
   validate_provider_config
   install_ui_and_services

@@ -126,6 +126,16 @@ else
   echo "  (python3+yaml unavailable — skipping YAML validity check)"
 fi
 
+sec "provider: native selection (NVIDIA) writes provider id + its key env"
+CFGP="$TMP/prov.yaml"; EFP="$TMP/prov.env"; : > "$EFP"; chmod 600 "$EFP"
+HERMES_INSTALL_NONINTERACTIVE=1
+ANS_PROVIDER="NVIDIA — NIM cloud"; ANS_NVIDIA_API_KEY="nvapi-test123"; ANS_MODEL="deepseek-ai/deepseek-r1"
+configure_provider "$CFGP" "$EFP" >/dev/null 2>&1
+has "$(cat "$CFGP")" "provider: nvidia" "config.yaml: provider: nvidia"
+has "$(cat "$CFGP")" 'default: "deepseek-ai/deepseek-r1"' "config.yaml: model written"
+grep -q '^NVIDIA_API_KEY=nvapi-test123' "$EFP" && ok "NVIDIA_API_KEY written to .env" || bad "key env not written"
+unset HERMES_INSTALL_NONINTERACTIVE ANS_PROVIDER ANS_NVIDIA_API_KEY ANS_MODEL NVIDIA_API_KEY
+
 sec "messaging: providing an allow-list must not abort under set -e (regression)"
 EFM="$TMP/msg.env"; : > "$EFM"; chmod 600 "$EFM"
 msg_out="$(cd "$REPO_DIR" && \
