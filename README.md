@@ -155,6 +155,39 @@ bash test/local-test.sh       # capability + dry-run wizard in a 2 GB container
 bash test/local-test.sh --full  # real end-to-end install + /health probe (slow)
 ```
 
+## Multiple profiles (separate identities / messengers)
+
+Hermes has **profiles** — multiple fully isolated instances, each with its own config, memory,
+model and messaging gateway. Use them to run separate "accounts", e.g. one profile on a Telegram
+bot and another on Slack.
+
+> On the default non-root install, run the `hermes` CLI **as the service user**. Either open a shell
+> as it — `sudo -u hermes -i` (then run the commands below plainly) — or prefix each command with
+> `runuser -u hermes --`.
+
+```bash
+hermes profile create work     # create a new isolated profile ("account")
+hermes profile use work        # make it the active/sticky profile
+hermes model                   # set THIS profile's AI provider + model (+ key)
+hermes gateway setup           # configure THIS profile's messenger(s): Telegram / Slack / Discord / ...
+hermes gateway install         # run this profile's gateway as a background (systemd) service
+hermes profile list            # all profiles + their model + gateway status
+hermes gateway list            # gateway status per profile
+```
+
+Each profile keeps its **own `.env`** (its own bot tokens / API keys) and its **own memory**, so a
+Telegram bot on profile `work` and a Slack app on profile `home` never share credentials or context.
+Within a single profile you can still enable several messengers at once — each with its own
+`*_ALLOWED_USERS` allow-list. Switch the active profile any time with `hermes profile use <name>`
+(the WebUI also has a profile switcher).
+
+To set a messenger without the interactive wizard, switch to the profile and set its keys via
+`hermes config set` / `hermes secrets` (they write that profile's `.env`), then `hermes gateway restart`.
+
+**On Mikrus:** every profile with a *running* gateway is a separate process → more RAM. One or two
+extra profiles are fine on 3.0 (2 GB); for several, prefer 3.5 (4 GB). The installer provisions the
+`default` profile; add more with the commands above.
+
 ## Known limitations
 
 - **Discord and Signal are not offered** — the current hermes-agent does not expose them via config
