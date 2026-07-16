@@ -126,6 +126,16 @@ else
   echo "  (python3+yaml unavailable — skipping YAML validity check)"
 fi
 
+sec "messaging: providing an allow-list must not abort under set -e (regression)"
+EFM="$TMP/msg.env"; : > "$EFM"; chmod 600 "$EFM"
+msg_out="$(cd "$REPO_DIR" && \
+  HERMES_INSTALL_NONINTERACTIVE=1 NO_COLOR=1 \
+  ANS_ENABLE_TELEGRAM=yes ANS_TELEGRAM_BOT_TOKEN='123:abc' ANS_TELEGRAM_ALLOWED_USERS='8753277875' \
+  ANS_ENABLE_SLACK=no ANS_ENABLE_WHATSAPP=no ANS_ENABLE_EMAIL=no ANS_ENABLE_TEAMS=no ANS_ENABLE_GOOGLECHAT=no \
+  bash -euo pipefail -c 'source lib/common.sh; source lib/messaging.sh; configure_messaging "'"$EFM"'" >/dev/null 2>&1; echo COMPLETED' 2>&1)"
+[[ "$msg_out" == *COMPLETED* ]] && ok "configure_messaging completes with allow-list set (no set -e abort)" || bad "aborted under set -e when allow-list provided"
+grep -q '^TELEGRAM_ALLOWED_USERS=8753277875' "$EFM" && ok "allow-list persisted to env" || bad "allow-list not written"
+
 sec "webui_set_password: reuse existing on empty answer (idempotency)"
 EF="$TMP/webui.env"; : > "$EF"; chmod 600 "$EF"
 set_env_var "$EF" HERMES_WEBUI_PASSWORD "keepme123"

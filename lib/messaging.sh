@@ -13,7 +13,14 @@
 # Warn (do not block) when a bridge is left open to everyone.
 _warn_open_allowlist() {
   local users="$1" bridge="$2"
-  [[ -z "$users" ]] && log_warn "$bridge: no allow-list set — the bot may respond to anyone who finds it. Consider restricting."
+  # NOTE: must return 0. A bare `[[ -z x ]] && log_warn` returns 1 when an
+  # allow-list IS set — and under `set -e` that non-zero return (this is the
+  # function's last command) aborts the whole installer right after the bridge,
+  # skipping the WebUI/services steps. So use if/fi and end on success.
+  if [[ -z "$users" ]]; then
+    log_warn "$bridge: no allow-list set — the bot may respond to anyone who finds it. Consider restricting."
+  fi
+  return 0
 }
 
 _bridge_telegram() {
