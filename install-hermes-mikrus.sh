@@ -19,7 +19,11 @@
 #                    when installing as root). Created if missing.
 #   --as-root        Do NOT drop to a service user; run as root (not recommended —
 #                    the agent has a shell tool, so root = full blast radius).
+#   --auto-update    Schedule a weekly `--update` (systemd timer, cron fallback).
 #   -h, --help       Show this help.
+#
+# On start you are asked which version to install: latest release tag
+# (recommended), bleeding-edge main/master, or a custom tag/commit.
 
 set -euo pipefail
 
@@ -37,6 +41,9 @@ FORCE="no"
 ANSWERS_FILE=""
 AS_ROOT="no"
 SERVICE_USER=""
+AUTO_UPDATE="no"
+AGENT_REF=""            # git tag/commit for the agent ("" = installer default / main)
+WEBUI_REF="master"      # git tag/branch for the WebUI clone
 INSTALLER_URL="https://hermes-agent.nousresearch.com/install.sh"
 # SERVICE_HOME / HERMES_HOME / CONFIG_YAML / ENV_FILE / HERMES_BIN are set by
 # resolve_identity() (they depend on the resolved service user).
@@ -60,6 +67,7 @@ parse_args() {
       --as-root)     AS_ROOT="yes" ;;
       --service-user) shift; SERVICE_USER="${1:-}" ;;
       --service-user=*) SERVICE_USER="${1#*=}" ;;
+      --auto-update) AUTO_UPDATE="yes" ;;
       -h|--help)     usage; exit 0 ;;
       *)             die "Unknown flag: $1 (use --help)" ;;
     esac
@@ -204,6 +212,42 @@ decide_browser() {
     || log_ok "Browser tools off (recommended on small boxes) — Playwright/Chromium skipped."
 }
 
+# Latest release tag for a GitHub repo (empty on failure). No jq dependency.
+gh_latest_tag() {
+  fetch "https://api.github.com/repos/$1/releases/latest" 2>/dev/null \
+    | grep -oE '"tag_name"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 \
+    | sed -E 's/.*"([^"]*)"[[:space:]]*$/\1/' || true
+}
+
+# Ask which version to install: latest release tag (recommended), bleeding-edge
+# main/master, or a custom tag/commit. Sets AGENT_REF + WEBUI_REF/WEBUI_BRANCH.
+choose_version() {
+  log_step "Version to install"
+  local VERSION_CHOICE=""
+  ask_menu VERSION_CHOICE "Which version?" \
+    "Latest release tag (recommended)" \
+    "Bleeding edge (agent main / WebUI master)" \
+    "Custom (enter a tag or commit)"
+  case "$VERSION_CHOICE" in
+    "Latest release tag"*)
+      log_info "Resolving latest release tags from GitHub..."
+      AGENT_REF="$(gh_latest_tag NousResearch/hermes-agent)"
+      WEBUI_REF="$(gh_latest_tag nesquena/hermes-webui)"
+      [[ -n "$AGENT_REF" ]] && log_ok "Agent: $AGENT_REF" || log_warn "Could not resolve agent tag — falling back to main."
+      [[ -n "$WEBUI_REF" ]] && log_ok "WebUI: $WEBUI_REF" || WEBUI_REF="master"
+      ;;
+    "Bleeding edge"*)
+      AGENT_REF=""; WEBUI_REF="master"
+      log_ok "Using agent main / WebUI master (bleeding edge)."
+      ;;
+    *)
+      ask AGENT_REF "Agent tag or commit (blank = main)" ""
+      ask WEBUI_REF "WebUI tag or branch" "master"
+      ;;
+  esac
+  WEBUI_BRANCH="${WEBUI_REF:-master}"   # consumed by webui.sh:webui_clone_or_update
+}
+
 install_agent() {
   log_step "Installing the Hermes agent (uv)"
   if agent_installed; then
@@ -219,6 +263,13 @@ install_agent() {
   # unless the user opted into browser tools.
   local -a flags=(--skip-setup)
   [[ "$BROWSER_ENABLED" != "yes" ]] && flags+=(--skip-browser)
+  # Pin the agent version if the user chose a tag/commit (git tags → --branch,
+  # 7-40 hex → --commit, per the upstream installer's flags).
+  if [[ -n "$AGENT_REF" ]]; then
+    if [[ "$AGENT_REF" =~ ^[0-9a-f]{7,40}$ ]]; then flags+=(--commit "$AGENT_REF")
+    else flags+=(--branch "$AGENT_REF"); fi
+    log_info "Pinning agent to: $AGENT_REF"
+  fi
   # Install AS the service user (per-user layout under its home), not root.
   chmod 755 "$tmp"   # the public installer must be readable/executable by the service user
   as_user env HOME="$SERVICE_HOME" HERMES_HOME="$HERMES_HOME" bash "$tmp" "${flags[@]}" </dev/null \
@@ -266,6 +317,49 @@ install_ui_and_services() {
   webui_install_services "$SERVICE_USER" "$SERVICE_HOME" "$ENV_FILE" "$HERMES_BIN"
 }
 
+# Opt-in: schedule a weekly `--update` (systemd timer preferred, cron fallback).
+install_auto_update() {
+  [[ "$AUTO_UPDATE" == "yes" ]] || return 0
+  log_step "Scheduling weekly auto-update"
+  local self="$SCRIPT_DIR/install-hermes-mikrus.sh"
+  if systemd_running; then
+    local ud="/usr/lib/systemd/system"; [[ -d "$ud" ]] || ud="/etc/systemd/system"
+    cat > "$ud/hermes-update.service" <<EOF
+[Unit]
+Description=Hermes stack auto-update (agent + WebUI)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/env bash ${self} --update
+EOF
+    cat > "$ud/hermes-update.timer" <<EOF
+[Unit]
+Description=Weekly Hermes stack auto-update
+
+[Timer]
+OnCalendar=weekly
+Persistent=true
+RandomizedDelaySec=1h
+
+[Install]
+WantedBy=timers.target
+EOF
+    systemctl daemon-reload || true
+    systemctl enable --now hermes-update.timer 2>/dev/null \
+      && log_ok "Auto-update on (systemd timer, weekly). Off: systemctl disable --now hermes-update.timer" \
+      || log_warn "Could not enable hermes-update.timer."
+  elif have_cmd crontab; then
+    local line="0 4 * * 0 bash ${self} --update >> ${HERMES_HOME}/update.log 2>&1"
+    { crontab -l 2>/dev/null | grep -vF -- "--update" || true; echo "$line"; } | crontab - \
+      && log_ok "Auto-update on (cron, Sundays 04:00)." \
+      || log_warn "Could not install cron entry."
+  else
+    log_warn "No systemd or cron available — cannot schedule auto-update."
+  fi
+}
+
 print_summary() {
   log_step "Done"
   log_ok "Hermes stack installed."
@@ -301,6 +395,7 @@ do_install() {
     return 0
   fi
   ensure_prereqs
+  choose_version
   ensure_service_user
   install_agent
   local CONTINUE_CONFIG=""
@@ -315,6 +410,7 @@ do_install() {
   validate_provider_config
   install_ui_and_services
   mikrus_expose_webui 8787 || log_warn "Exposure step incomplete — see notes above."
+  install_auto_update
   print_summary
   if [[ "${DEFER_HERMES_SETUP:-no}" == "yes" ]]; then
     log_warn "Provider deferred — run 'hermes setup' to finish AI configuration."

@@ -80,6 +80,7 @@ You will be asked about your AI provider + key, optional messaging bridges, and 
 | `--force` | Proceed despite capability warnings. |
 | `--service-user N` | Run the agent/WebUI/gateway as account `N` (default `hermes` when installing as root). |
 | `--as-root` | Do **not** drop to a service user; run as root (not recommended). |
+| `--auto-update` | Schedule a weekly `--update` (systemd timer, cron fallback). |
 | `--answers FILE` | Non-interactive; read answers from an `ANS_*` file (see `test/answers.example.env`). |
 
 ## Exposure on Mikrus
@@ -119,13 +120,30 @@ If `wykr.es` doesn't resolve, confirm the port is allocated in the Mikrus panel.
   autonomous agent *with a shell tool*, so a compromise (or prompt injection) is contained to that
   account instead of root. Override with `--as-root`, or pick a name with `--service-user NAME`.
 
+## Versioning
+
+At the start the installer asks **which version** to install:
+
+1. **Latest release tag** (recommended) — resolves the newest release tag of both
+   `hermes-agent` and `hermes-webui` from GitHub and pins to them.
+2. **Bleeding edge** — agent `main` / WebUI `master`.
+3. **Custom** — enter a tag or commit for each.
+
+Pinning to tags gives reproducible installs; upstream advises upgrading the agent and WebUI
+together, which the "latest tag" option does in one shot.
+
 ## Updating / uninstalling
 
 ```bash
-bash install-hermes-mikrus.sh --update      # upgrade agent + WebUI together
-bash uninstall-hermes-mikrus.sh             # remove services + proxy, keep data
+bash install-hermes-mikrus.sh --update      # upgrade agent + WebUI together (to latest), backs up config first
+bash install-hermes-mikrus.sh --auto-update  # (at install time) schedule a weekly --update
+bash uninstall-hermes-mikrus.sh             # remove services + proxy + timer, keep data
 bash uninstall-hermes-mikrus.sh --purge     # also delete ~/.hermes (irreversible)
 ```
+
+`--update` backs up `config.yaml`+`.env`, re-runs the upstream installer and `git pull`s the WebUI,
+restarts services and probes `/health`. `--auto-update` (opt-in, install time) installs a weekly
+systemd timer (`hermes-update.timer`; cron fallback) that runs `--update` for you.
 
 ## Testing locally (before buying a Mikrus)
 

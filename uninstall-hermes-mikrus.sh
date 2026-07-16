@@ -36,16 +36,20 @@ fi
 
 log_step "Stopping and removing services"
 if [[ -d /run/systemd/system ]] && have_cmd systemctl; then
+  systemctl disable --now hermes-update.timer 2>/dev/null || true
   for svc in hermes-webui hermes-gateway; do
     systemctl disable --now "$svc" 2>/dev/null || true
   done
   for ud in /usr/lib/systemd/system /etc/systemd/system; do
-    rm -f "$ud/hermes-gateway.service" "$ud/hermes-webui.service"
+    rm -f "$ud/hermes-gateway.service" "$ud/hermes-webui.service" \
+          "$ud/hermes-update.service" "$ud/hermes-update.timer"
   done
   systemctl daemon-reload 2>/dev/null || true
-  log_ok "systemd services removed."
+  log_ok "systemd services + auto-update timer removed."
 else
   log_info "systemd not present — nothing to disable."
+  # cron fallback: drop any auto-update line we added.
+  have_cmd crontab && { crontab -l 2>/dev/null | grep -vF -- '--update' | crontab - 2>/dev/null || true; }
 fi
 
 log_step "Removing the reverse proxy site"
