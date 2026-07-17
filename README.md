@@ -292,6 +292,20 @@ stays allowed by default, so nginx → `127.0.0.1:8787` keeps working.
 > not test this on a live Mikrus — verify `ufw status` and your SSH access first. The WebUI password
 > plus Mikrus's TLS edge remain your primary protection either way.
 
+## Choosing a model
+
+Model IDs are **provider-side and change over time**, and Hermes requires a model with a **≥64K
+context window**. So:
+
+- A wrong/retired ID returns `HTTP 404: 404 page not found` (e.g. NVIDIA dropped `deepseek-ai/deepseek-r1`
+  → use `deepseek-ai/deepseek-v4-pro`; MiniMax is `minimaxai/minimax-m3`, Kimi is `moonshotai/kimi-k2.6`).
+- A small-context model is rejected (`… context window of 16,000 … below the minimum 64,000`).
+- Run **`hermes model`** to pick a valid model from the provider's live catalog — the reliable fix.
+- Big models can take ~15–30 s on the **first** message (cold start), which is normal, not an error.
+
+Verified NVIDIA picks with ≥64K context: `z-ai/glm-5.2`, `deepseek-ai/deepseek-v4-pro`,
+`meta/llama-3.3-70b-instruct`, `qwen/qwen3.5-122b-a10b`.
+
 ## Known limitations
 
 - **Discord and Signal are not offered** — the current hermes-agent does not expose them via config

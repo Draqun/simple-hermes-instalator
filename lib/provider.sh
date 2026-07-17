@@ -18,7 +18,7 @@ _PROVIDERS=(
   "Anthropic — Claude (direct)|anthropic|ANTHROPIC_API_KEY|claude-opus-4-6|https://console.anthropic.com/"
   "Google — Gemini|gemini|GEMINI_API_KEY|gemini-3-flash|https://aistudio.google.com/apikey"
   "OpenAI|openai-api|OPENAI_API_KEY|gpt-5.4|https://platform.openai.com/api-keys"
-  "NVIDIA — NIM cloud|nvidia|NVIDIA_API_KEY|deepseek-ai/deepseek-r1|https://build.nvidia.com/"
+  "NVIDIA — NIM cloud|nvidia|NVIDIA_API_KEY|meta/llama-3.3-70b-instruct|https://build.nvidia.com/"
   "DeepSeek|deepseek|DEEPSEEK_API_KEY|deepseek-chat|https://platform.deepseek.com/"
   "xAI — Grok|xai|XAI_API_KEY|grok-4|https://console.x.ai/"
   "z.ai — GLM|zai|GLM_API_KEY|glm-4-plus|https://z.ai/"
@@ -78,6 +78,8 @@ _provider_native() {
   fi
   _write_model_block "$cfg" "$pid" "$MODEL"
   log_ok "Provider: ${pid} · model: ${MODEL:-<unset>}"
+  log_info "Note: the model must EXIST in the provider's catalog and have a ≥64K context window"
+  log_info "(Hermes rejects smaller ones). If it 404s or is rejected, run 'hermes model' to pick a valid one."
 }
 
 _provider_custom_openai() {
