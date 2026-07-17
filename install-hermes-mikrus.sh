@@ -10,6 +10,7 @@
 # Flags:
 #   --update         Update an already-installed stack (agent + WebUI together).
 #   --reconfigure    Re-run the wizard without reinstalling.
+#   --expose         (Re)run only the Mikrus exposure step (nginx + subdomain).
 #   --uninstall      Remove the stack (delegates to uninstall-hermes-mikrus.sh).
 #   --check-only     Run the capability check and exit (no changes).
 #   --dry-run        Run the wizard + write config, but skip the heavy install.
@@ -62,6 +63,7 @@ parse_args() {
     case "$1" in
       --update)      MODE="update" ;;
       --reconfigure) MODE="reconfigure" ;;
+      --expose)      MODE="expose" ;;
       --uninstall)   MODE="uninstall" ;;
       --check-only)  MODE="check" ;;
       --dry-run)     MODE="dryrun" ;;
@@ -180,8 +182,9 @@ ensure_prereqs() {
   if (( ${#missing[@]} )); then
     log_info "Installing: ${missing[*]}"
     if have_cmd apt-get; then
-      DEBIAN_FRONTEND=noninteractive apt-get update -qq
-      DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "${missing[@]}" \
+      # Wait for a busy apt lock (Mikrus first-boot / unattended-upgrades) rather than failing.
+      DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=180 update -qq
+      DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=180 install -y -qq "${missing[@]}" \
         || die "Could not install prerequisites: ${missing[*]}"
     else
       die "Missing ${missing[*]} and no apt-get to install them."
@@ -443,6 +446,13 @@ do_reconfigure() {
   log_ok "Reconfigured${SERVICE_USER:+ (runs as $SERVICE_USER)}."
 }
 
+do_expose() {
+  agent_installed || die "Hermes is not installed — run the installer first."
+  detect_capabilities            # sets MIKRUS_DETECTED / MIKRUS_SERVER / MIKRUS_ID
+  mikrus_expose_webui 8787 || die "Exposure failed — see the notes above."
+  [[ -n "${PUBLIC_URL:-}" ]] && log_ok "WebUI exposed at ${PUBLIC_URL}"
+}
+
 do_update() {
   agent_installed || die "Nothing to update — Hermes is not installed."
   log_step "Updating the Hermes stack"
@@ -504,6 +514,7 @@ main() {
     uninstall)   exec bash "$SCRIPT_DIR/uninstall-hermes-mikrus.sh" ${ANSWERS_FILE:+--answers "$ANSWERS_FILE"} ;;
     update)      do_update ;;
     reconfigure) do_reconfigure ;;
+    expose)      do_expose ;;
     dryrun)      do_install "yes" ;;
     install)     do_install "no" ;;
   esac

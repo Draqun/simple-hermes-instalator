@@ -117,6 +117,13 @@ _write_model_block "$CFG3" anthropic "claude-opus-4-6"
 [[ "$(grep -c '^model:' "$CFG3")" == "1" ]] && ok "commented model: stripped (no duplicate)" || bad "commented model: left a duplicate"
 grep -q 'old' "$CFG3" && bad "commented case: stale model lingered" || ok "commented case: stale model removed"
 
+sec "capability: Mikrus ID = trailing digits of hostname (regression)"
+[[ "$(_mikrus_id_from_hostname bob305)" == "305" ]] && ok "bob305 -> 305" || bad "bob305 -> $(_mikrus_id_from_hostname bob305) (want 305)"
+[[ "$(_mikrus_id_from_hostname emil100)" == "100" ]] && ok "emil100 -> 100" || bad "emil100 wrong"
+[[ "$(_mikrus_id_from_hostname f853)" == "853" ]] && ok "f853 -> 853" || bad "f853 wrong"
+[[ "$(_mikrus_id_from_hostname f008)" == "8" ]] && ok "f008 -> 8 (base-10, no octal)" || bad "f008 -> $(_mikrus_id_from_hostname f008) (want 8)"
+[[ -z "$(_mikrus_id_from_hostname nodigits)" ]] && ok "no digits -> empty" || bad "no-digits not empty"
+
 sec "provider: strip model block with blank lines + comments (corruption regression)"
 CFG4="$TMP/config4.yaml"
 printf 'top_key: 1\n\n# Model Configuration\nmodel:\n  # inference provider selection\n  provider: "auto"\n\n  default: "old-model"\n  base_url: "https://old"\nterminal:\n  backend: local\n' > "$CFG4"

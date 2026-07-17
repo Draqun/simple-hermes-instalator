@@ -78,14 +78,20 @@ detect_arch() { uname -m 2>/dev/null || echo unknown; }
 # trailing digits are the machine ID used for the port formula and subdomains.
 # There is no plan/spec query command, so this is purely name-based.
 
+# The machine ID is the TRAILING digits of the hostname (bob305 -> 305,
+# emil100 -> 100, f853 -> 853). Base-10-normalised so a leading zero (008)
+# doesn't get mis-read as octal in the port arithmetic.
+_mikrus_id_from_hostname() {
+  local h="$1"
+  [[ "$h" =~ ([0-9]+)$ ]] || { echo ""; return; }
+  echo "$((10#${BASH_REMATCH[1]}))"
+}
+
 detect_mikrus() {
   local h; h="$(hostname 2>/dev/null || echo)"
-  if [[ "$h" =~ ^([a-z]+[0-9]*[a-z]*)([0-9]+)$ ]] && [[ -f /etc/mikrus_version || -d /opt/noobs ]]; then
-    MIKRUS_DETECTED="yes"; MIKRUS_SERVER="$h"; MIKRUS_ID="${BASH_REMATCH[2]}"
-  elif [[ -d /opt/noobs || -f /etc/mikrus_version ]]; then
-    # Mikrus markers present but hostname unusual — still flag it.
-    MIKRUS_DETECTED="yes"; MIKRUS_SERVER="$h"
-    [[ "$h" =~ ([0-9]+)$ ]] && MIKRUS_ID="${BASH_REMATCH[1]}"
+  if [[ -d /opt/noobs || -f /etc/mikrus_version ]]; then
+    # MIKRUS_SERVER is the FULL hostname (used verbatim in serverName-port.wykr.es).
+    MIKRUS_DETECTED="yes"; MIKRUS_SERVER="$h"; MIKRUS_ID="$(_mikrus_id_from_hostname "$h")"
   fi
 }
 

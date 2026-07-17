@@ -64,8 +64,10 @@ mikrus_ensure_nginx() {
   if have_cmd nginx; then log_ok "nginx already present."; return 0; fi
   log_info "Installing nginx (reverse proxy)..."
   if have_cmd apt-get; then
-    DEBIAN_FRONTEND=noninteractive apt-get update -qq && \
-    DEBIAN_FRONTEND=noninteractive apt-get install -y -qq nginx \
+    # -o DPkg::Lock::Timeout=180 waits for a busy apt lock (Mikrus first-boot /
+    # unattended-upgrades often hold it) instead of failing immediately.
+    DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=180 update -qq && \
+    DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=180 install -y -qq nginx \
       || { log_warn "Could not install nginx automatically."; return 1; }
   else
     log_warn "No apt-get found — install nginx manually."; return 1
