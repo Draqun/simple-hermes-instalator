@@ -98,8 +98,11 @@ mikrus_write_and_reload() {
   fi
 }
 
-# Full exposure flow. Sets global PUBLIC_URL for the caller to print.
+# Full exposure flow. Sets globals PUBLIC_URL (primary) and PUBLIC_ORIGINS
+# (both the wykr.es + mikrus.cloud origins, for the WebUI allow-list) for the
+# caller to print / feed to webui_secure_behind_proxy.
 PUBLIC_URL=""
+PUBLIC_ORIGINS=""
 mikrus_expose_webui() {
   local webui_port="${1:-8787}"
   log_step "Exposing the WebUI via Mikrus"
@@ -122,8 +125,10 @@ mikrus_expose_webui() {
   mikrus_ensure_nginx || { log_warn "Skipping exposure (nginx unavailable)."; return 1; }
   mikrus_write_and_reload "$PUBLIC_PORT" "$webui_port" "${MIKRUS_SERVER:-$(hostname)}" || return 1
 
-  PUBLIC_URL="https://${MIKRUS_SERVER:-$(hostname)}-${PUBLIC_PORT}.wykr.es"
+  local name="${MIKRUS_SERVER:-$(hostname)}"
+  PUBLIC_URL="https://${name}-${PUBLIC_PORT}.wykr.es"
+  PUBLIC_ORIGINS="https://${name}-${PUBLIC_PORT}.wykr.es,https://${name}-${PUBLIC_PORT}.mikrus.cloud"
   log_ok "Public URL: ${PUBLIC_URL}"
-  log_info "Also available (IPv6): https://${MIKRUS_SERVER:-$(hostname)}-${PUBLIC_PORT}.mikrus.cloud"
+  log_info "Also available (IPv6): https://${name}-${PUBLIC_PORT}.mikrus.cloud"
   log_info "If wykr.es does not resolve, confirm port ${PUBLIC_PORT} is allocated in the Mikrus panel."
 }

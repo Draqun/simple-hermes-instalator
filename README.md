@@ -117,6 +117,29 @@ shared IPv4, and every Mikrus VPS also has a full IPv6 with all ports open). Tha
 sites (e.g. an app on port 80) are left untouched — our server block owns only its dedicated port.
 If `wykr.es` doesn't resolve, confirm the port is allocated in the Mikrus panel.
 
+The installer prints **both** URLs — e.g. `https://bob305-20305.wykr.es` (IPv4) and
+`https://bob305-20305.mikrus.cloud` (IPv6). (Verified on a live Mikrus 3.0.)
+
+### WebUI login hardening (passkeys)
+
+When it exposes the WebUI, the installer automatically writes to `~/.hermes/.env`:
+`HERMES_WEBUI_PASSKEY=1` (WebAuthn/passkeys are off by default upstream), `HERMES_WEBUI_SECURE=1`,
+`HERMES_WEBUI_TRUST_FORWARDED_PROTO=1`, and `HERMES_WEBUI_ALLOWED_ORIGINS=<both URLs>`, then restarts
+the WebUI. So after exposure you can **register a passkey** in the UI: *Settings → System → add
+passkey* (security key, phone, or platform biometric); optionally then disable the password.
+
+- ⚠️ **Passkeys are origin-bound.** `…wykr.es` and `…mikrus.cloud` are two different WebAuthn origins —
+  a passkey registered on one won't validate on the other. Pick **one** canonical URL and register
+  there. Changing the hostname later invalidates existing passkeys (re-register).
+- ⚠️ **Keep the password** until at least one passkey works — the WebUI blocks removing the last
+  passkey when no password is set, but don't strand yourself.
+- **Full MFA / TOTP:** the WebUI has no built-in TOTP, but supports **OIDC** — point it at an identity
+  provider that enforces MFA via `HERMES_WEBUI_OIDC_ISSUER` / `_CLIENT_ID` / `_ALLOW_CLAIM` /
+  `_ALLOW_VALUES` (all four required), then `systemctl restart hermes-webui`.
+
+Already installed before this landed? Just re-run the exposure step: `bash install-hermes-mikrus.sh
+--expose` (it now sets those vars and restarts the WebUI).
+
 > **NOOBS:** this follows Mikrus's [NOOBS](https://github.com/unkn0w/noobs) convention (installer
 > scripts in `/opt/noobs`). You can drop the script there alongside `n8n_install`, or contribute it
 > upstream.

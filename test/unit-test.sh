@@ -81,6 +81,14 @@ has "$WU" "After=network-online.target hermes-gateway.service" "webui starts aft
 has "$WU" "EnvironmentFile=/root/.hermes/.env" "webui: env file wired"
 has "$WU" "NoNewPrivileges=yes" "webui: NoNewPrivileges"
 
+sec "webui_secure_behind_proxy: passkeys + secure + allowed origins"
+EFX="$TMP/proxy.env"; : > "$EFX"; chmod 600 "$EFX"
+webui_secure_behind_proxy "$EFX" "https://a.wykr.es,https://a.mikrus.cloud" >/dev/null 2>&1
+grep -q '^HERMES_WEBUI_PASSKEY=1' "$EFX" && ok "passkey feature flag enabled" || bad "passkey flag missing"
+grep -q '^HERMES_WEBUI_SECURE=1' "$EFX" && ok "Secure cookie flag set" || bad "secure flag missing"
+grep -q '^HERMES_WEBUI_TRUST_FORWARDED_PROTO=1' "$EFX" && ok "trusts X-Forwarded-Proto" || bad "trust-proto missing"
+grep -q '^HERMES_WEBUI_ALLOWED_ORIGINS=https://a.wykr.es,https://a.mikrus.cloud' "$EFX" && ok "allowed origins = both URLs" || bad "origins missing/wrong"
+
 sec "systemd unit for a dedicated (non-root) service user"
 GU2="$(render_gateway_unit hermes /home/hermes /home/hermes/.local/bin/hermes)"
 has "$GU2" "User=hermes" "gateway runs as hermes (not root)"

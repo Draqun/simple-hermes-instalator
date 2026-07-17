@@ -64,6 +64,21 @@ webui_configure() {
   log_ok "WebUI bound to 127.0.0.1:${port} (public access via the reverse proxy only)."
 }
 
+# webui_secure_behind_proxy ENV_FILE ORIGINS -> configure the WebUI for the
+# public HTTPS reverse proxy: enable passkeys/WebAuthn (feature flag is off by
+# default upstream), mark the connection secure, trust the proxy's
+# X-Forwarded-Proto, and allow the public origin(s) for CSRF. Called after the
+# exposure step, once the public URL(s) are known.
+webui_secure_behind_proxy() {
+  local env_file="$1" origins="${2:-}"
+  set_env_var "$env_file" HERMES_WEBUI_PASSKEY "1"
+  set_env_var "$env_file" HERMES_WEBUI_SECURE "1"
+  set_env_var "$env_file" HERMES_WEBUI_TRUST_FORWARDED_PROTO "1"
+  [[ -n "$origins" ]] && set_env_var "$env_file" HERMES_WEBUI_ALLOWED_ORIGINS "$origins"
+  log_ok "WebUI hardened for the proxy: passkeys enabled, Secure cookies, allowed origins set."
+  log_info "Register a passkey in Settings → System. Passkeys are origin-bound — use ONE of the URLs above."
+}
+
 # --- systemd units (pure render functions; content is unit-testable) --------
 
 render_gateway_unit() {

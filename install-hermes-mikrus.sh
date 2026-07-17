@@ -426,7 +426,11 @@ do_install() {
   fix_ownership              # hand config to the service user so 'hermes doctor' can read it
   validate_provider_config
   install_ui_and_services
-  mikrus_expose_webui 8787 || log_warn "Exposure step incomplete — see notes above."
+  if mikrus_expose_webui 8787; then
+    harden_webui_for_proxy
+  else
+    log_warn "Exposure step incomplete — see notes above."
+  fi
   install_auto_update
   print_summary
   if [[ "${DEFER_HERMES_SETUP:-no}" == "yes" ]]; then
@@ -446,10 +450,20 @@ do_reconfigure() {
   log_ok "Reconfigured${SERVICE_USER:+ (runs as $SERVICE_USER)}."
 }
 
+# Once exposed behind the public HTTPS proxy, harden the WebUI: enable passkeys,
+# Secure cookies, trust the forwarded proto, and allow the public origin(s).
+harden_webui_for_proxy() {
+  [[ -n "${PUBLIC_ORIGINS:-}" ]] || return 0
+  webui_secure_behind_proxy "$ENV_FILE" "$PUBLIC_ORIGINS"
+  fix_ownership
+  if systemd_running; then systemctl restart hermes-webui 2>/dev/null || true; fi
+}
+
 do_expose() {
   agent_installed || die "Hermes is not installed — run the installer first."
   detect_capabilities            # sets MIKRUS_DETECTED / MIKRUS_SERVER / MIKRUS_ID
   mikrus_expose_webui 8787 || die "Exposure failed — see the notes above."
+  harden_webui_for_proxy
   [[ -n "${PUBLIC_URL:-}" ]] && log_ok "WebUI exposed at ${PUBLIC_URL}"
 }
 
