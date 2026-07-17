@@ -74,7 +74,8 @@ GU="$(render_gateway_unit root /root)"
 has "$GU" "ExecStart=/root/.local/bin/hermes gateway run" "gateway ExecStart"
 has "$GU" "NoNewPrivileges=yes" "gateway: NoNewPrivileges"
 has "$GU" "ProtectSystem=strict" "gateway: ProtectSystem=strict"
-has "$GU" "ReadWritePaths=/root/.hermes /root/workspace" "gateway: ReadWritePaths scoped"
+has "$GU" "ReadWritePaths=/root/.hermes /root/.local /root/.cache /root/workspace" "gateway: ReadWritePaths scoped"
+has "$GU" "ProtectKernelTunables=yes" "gateway: correct ProtectKernelTunables key (not the typo)"
 has "$GU" "Restart=on-failure" "gateway: restarts on failure"
 WU="$(render_webui_unit root /root /root/.hermes/.env /root/.hermes/hermes-webui)"
 has "$WU" "After=network-online.target hermes-gateway.service" "webui starts after gateway"
@@ -93,7 +94,11 @@ sec "systemd unit for a dedicated (non-root) service user"
 GU2="$(render_gateway_unit hermes /home/hermes /home/hermes/.local/bin/hermes)"
 has "$GU2" "User=hermes" "gateway runs as hermes (not root)"
 has "$GU2" "ExecStart=/home/hermes/.local/bin/hermes gateway run" "gateway uses the service user's bin"
-has "$GU2" "ReadWritePaths=/home/hermes/.hermes /home/hermes/workspace" "RW paths scoped to hermes home"
+has "$GU2" "ReadWritePaths=/home/hermes/.hermes /home/hermes/.local /home/hermes/.cache /home/hermes/workspace" "RW paths scoped to hermes home"
+# Regression: messaging bridges write session state to ~/.local/state; without it
+# in ReadWritePaths the sandbox makes it read-only → "[Errno 30] Read-only file
+# system" and no bridge ever connects. Assert .local is granted.
+has "$GU2" "ReadWritePaths=/home/hermes/.hermes /home/hermes/.local" "gateway: ~/.local writable (bridge session state)"
 
 sec "provider: _write_model_block (config.yaml generation)"
 CFG="$TMP/config.yaml"

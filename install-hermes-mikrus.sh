@@ -158,7 +158,8 @@ ensure_service_user() {
 # Give the service user ownership of everything we wrote as root.
 fix_ownership() {
   [[ "$SERVICE_USER" == "$(id -un)" ]] && return 0
-  chown -R "$SERVICE_USER":"$SERVICE_USER" "$HERMES_HOME" "$SERVICE_HOME/workspace" 2>/dev/null || true
+  chown -R "$SERVICE_USER":"$SERVICE_USER" \
+    "$HERMES_HOME" "$SERVICE_HOME/workspace" "$SERVICE_HOME/.local" "$SERVICE_HOME/.cache" 2>/dev/null || true
 }
 
 # Resolve the hermes binary path for the resolved layout (per-user vs root FHS).
@@ -311,9 +312,12 @@ configure_stack() {
 }
 
 install_ui_and_services() {
-  # The systemd units grant ReadWritePaths=$SERVICE_HOME/workspace; make sure it
-  # exists (default WebUI workspace) or ProtectHome=read-only blocks the agent.
-  mkdir -p "$SERVICE_HOME/workspace"
+  # The systemd units grant ReadWritePaths for these dirs; they MUST exist at
+  # service start or the sandbox (ProtectSystem=strict + ProtectHome=read-only)
+  # leaves them read-only. Messaging bridges write their session state to
+  # ~/.local/state (Telethon etc.); the agent caches under ~/.cache. Missing any
+  # of these makes bridges fail with "[Errno 30] Read-only file system".
+  mkdir -p "$SERVICE_HOME/workspace" "$SERVICE_HOME/.local/state" "$SERVICE_HOME/.cache"
   webui_clone_or_update || return 1
   # Point the WebUI at the actual agent code dir (root vs user layout differ).
   local agent_dir; agent_dir="$(detect_agent_dir)"
