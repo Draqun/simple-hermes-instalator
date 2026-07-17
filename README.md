@@ -29,6 +29,24 @@ browser tools). It also runs on larger plans (3.5+/4.x), auto-adapting to the RA
 - Root shell on the box (the Mikrus default) and outbound HTTPS.
 - ~3 GB free disk.
 
+### Dependencies
+
+The installer installs what it needs via `apt` if it's missing — on a normal Mikrus/Debian/Ubuntu
+box you don't have to prep anything:
+
+- **Installer prerequisites:** `curl`, `git`, `xz-utils`, `python3`, `ca-certificates` (the WebUI
+  launcher needs a system `python3` to boot).
+- **Exposure:** `nginx` — installed only when you expose the WebUI.
+- **Services + non-root default:** `systemd` and `runuser` (util-linux) — present on Mikrus already.
+
+The Hermes agent's own installer brings the rest itself (**uv, Python 3.11, Node.js, ripgrep,
+ffmpeg**), so you don't install those. To pre-install the prerequisites by hand:
+
+```bash
+sudo apt update && sudo apt install -y curl git xz-utils python3 ca-certificates
+# nginx is pulled automatically during the exposure step (or: sudo apt install -y nginx)
+```
+
 | RAM | Verdict | Default |
 |---|---|---|
 | ≥ 4 GB (Mikrus 3.5+) | comfortable | browser tools may be enabled |
@@ -132,6 +150,30 @@ At the start the installer asks **which version** to install:
 Pinning to tags gives reproducible installs; upstream advises upgrading the agent and WebUI
 together, which the "latest tag" option does in one shot.
 
+### Pinning from the command line
+
+Skip the prompt and pin explicitly:
+
+```bash
+bash install-hermes-mikrus.sh --agent-version <tag|commit> --webui-version <tag|branch|commit>
+```
+
+Examples:
+
+```bash
+# agent on a release tag, WebUI on a branch:
+bash install-hermes-mikrus.sh --agent-version v2026.7.7.2 --webui-version master
+
+# WebUI pinned to an exact commit (fully reproducible):
+bash install-hermes-mikrus.sh --agent-version v2026.7.7.2 \
+     --webui-version 92ebc10cac2e933b2fa2c7dd262e8f34a721e1dd
+```
+
+Passing either flag skips the interactive version prompt. `--webui-version` takes a tag, branch or
+commit SHA; `--agent-version` a tag or commit. (The commit above is the upstream fix for
+[#6131](https://github.com/nesquena/hermes-webui/issues/6131), which is on `master` but not yet in a
+release tag.)
+
 ## Updating / uninstalling
 
 ```bash
@@ -187,6 +229,45 @@ To set a messenger without the interactive wizard, switch to the profile and set
 **On Mikrus:** every profile with a *running* gateway is a separate process → more RAM. One or two
 extra profiles are fine on 3.0 (2 GB); for several, prefer 3.5 (4 GB). The installer provisions the
 `default` profile; add more with the commands above.
+
+## Firewall (optional, defence in depth)
+
+Mikrus only forwards **your allocated ports** on the shared IPv4 — but every VPS also has a full
+**IPv6 with all ports open**, so a host firewall is worth adding to lock that surface down. Two rules
+must be right: keep **SSH** reachable and keep the **app port** reachable.
+
+⚠️ **Mind the NAT difference** (this is what usually locks people out):
+
+- **SSH** — you connect on `10000+ID` externally (e.g. `ssh bob305.mikrus.xyz -p 10305`), but Mikrus
+  **NATs that to port `22` inside the container**, so your firewall rule must allow **`22`**, not
+  `10305`.
+- **App / WebUI** — the `20000+ID` / `30000+ID` ports are a direct passthrough, so nginx binds the
+  literal port inside; allow **`20000+ID`** (e.g. `20305`).
+
+**Verify the SSH port first, and keep a second SSH session open while enabling:**
+
+```bash
+sudo ss -tlnp | grep -iE 'ssh'            # confirm sshd's listen port (almost always :22)
+
+sudo apt install -y ufw
+sudo ufw default allow outgoing           # the agent needs outbound (LLM/messaging APIs, git, apt)
+sudo ufw default deny incoming
+sudo ufw allow 22/tcp                      # SSH — the INTERNAL port from the check above
+sudo ufw allow 20305/tcp                   # app / WebUI reverse proxy — your 20000+ID
+# sudo ufw allow 30305/tcp                 # only if you use the 3rd default port
+sudo ufw --force enable
+sudo ufw status verbose
+```
+
+Replace `305` with your machine ID (the trailing digits of your hostname). `ufw` applies each rule to
+**both IPv4 and IPv6** — which is the point here, since IPv6 is the wide-open side on Mikrus. Loopback
+stays allowed by default, so nginx → `127.0.0.1:8787` keeps working.
+
+> **Don't lock yourself out:** add the SSH rule (and confirm its real port) *before* `enable`, keep a
+> spare SSH session open, and re-connect from a new session to test before trusting it. Keep
+> **outgoing** allowed. On the unprivileged LXC, `ufw`/`iptables` support can be limited and I could
+> not test this on a live Mikrus — verify `ufw status` and your SSH access first. The WebUI password
+> plus Mikrus's TLS edge remain your primary protection either way.
 
 ## Known limitations
 
