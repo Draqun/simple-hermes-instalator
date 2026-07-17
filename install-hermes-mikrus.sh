@@ -11,6 +11,7 @@
 #   --update         Update an already-installed stack (agent + WebUI together).
 #   --reconfigure    Re-run the wizard without reinstalling.
 #   --expose         (Re)run only the Mikrus exposure step (nginx + subdomain).
+#   --restart        Restart the Hermes gateway and WebUI without changing config.
 #   --uninstall      Remove the stack (delegates to uninstall-hermes-mikrus.sh).
 #   --check-only     Run the capability check and exit (no changes).
 #   --dry-run        Run the wizard + write config, but skip the heavy install.
@@ -64,6 +65,7 @@ parse_args() {
       --update)      MODE="update" ;;
       --reconfigure) MODE="reconfigure" ;;
       --expose)      MODE="expose" ;;
+      --restart)     MODE="restart" ;;
       --uninstall)   MODE="uninstall" ;;
       --check-only)  MODE="check" ;;
       --dry-run)     MODE="dryrun" ;;
@@ -467,6 +469,54 @@ do_expose() {
   [[ -n "${PUBLIC_URL:-}" ]] && log_ok "WebUI exposed at ${PUBLIC_URL}"
 }
 
+do_restart() {
+  agent_installed || die "Hermes is not installed — run the installer first."
+  log_step "Restarting the Hermes gateway and WebUI"
+
+  if systemd_running; then
+    systemctl restart hermes-gateway.service hermes-webui.service \
+      || die "Could not restart the systemd services. Check: journalctl -u hermes-gateway -u hermes-webui"
+    systemctl is-active --quiet hermes-gateway.service \
+      || die "Hermes gateway did not become active. Check: journalctl -u hermes-gateway"
+    systemctl is-active --quiet hermes-webui.service \
+      || die "Hermes WebUI did not become active. Check: journalctl -u hermes-webui"
+  else
+    # Plain Docker/WSL environments have no systemd. Stop any manual gateway,
+    # start a detached replacement as the service user, and let WebUI's own
+    # controller replace its process. Mikrus normally takes the systemd path.
+    log_warn "systemd is not running — using the Docker/WSL process fallback."
+    as_user env HOME="$SERVICE_HOME" HERMES_HOME="$HERMES_HOME" \
+      PATH="$SERVICE_HOME/.local/bin:/usr/local/bin:/usr/bin:/bin" \
+      "$HERMES_BIN" gateway stop >/dev/null 2>&1 || true
+    # The single-quoted body expands inside the service-user shell, where the
+    # HERMES_HOME environment variable is intentionally available.
+    # shellcheck disable=SC2016
+    as_user env HOME="$SERVICE_HOME" HERMES_HOME="$HERMES_HOME" \
+      PATH="$SERVICE_HOME/.local/bin:/usr/local/bin:/usr/bin:/bin" \
+      bash -c 'nohup "$1" gateway run >"$HERMES_HOME/gateway-restart.log" 2>&1 </dev/null &' \
+      _ "$HERMES_BIN"
+
+    local ctl="$HERMES_HOME/hermes-webui/ctl.sh"
+    [[ -f "$ctl" ]] || die "WebUI controller not found: $ctl"
+    as_user env HOME="$SERVICE_HOME" HERMES_HOME="$HERMES_HOME" \
+      PATH="$SERVICE_HOME/.local/bin:/usr/local/bin:/usr/bin:/bin" \
+      bash "$ctl" restart || die "Could not restart the WebUI. Check: $HERMES_HOME/webui.log"
+  fi
+
+  if have_cmd curl; then
+    local healthy="no"
+    for _ in {1..20}; do
+      if curl -fsS -m 2 http://127.0.0.1:8787/health >/dev/null 2>&1; then
+        healthy="yes"; break
+      fi
+      sleep 1
+    done
+    [[ "$healthy" == "yes" ]] \
+      || die "WebUI did not pass /health after restart. Check: journalctl -u hermes-webui"
+  fi
+  log_ok "Hermes gateway and WebUI restarted${SERVICE_USER:+ as $SERVICE_USER}."
+}
+
 do_update() {
   agent_installed || die "Nothing to update — Hermes is not installed."
   log_step "Updating the Hermes stack"
@@ -529,6 +579,7 @@ main() {
     update)      do_update ;;
     reconfigure) do_reconfigure ;;
     expose)      do_expose ;;
+    restart)     do_restart ;;
     dryrun)      do_install "yes" ;;
     install)     do_install "no" ;;
   esac

@@ -98,6 +98,7 @@ You will be asked about your AI provider + key, optional messaging bridges, and 
 | `--force` | Proceed despite capability warnings. |
 | `--service-user N` | Run the agent/WebUI/gateway as account `N` (default `hermes` when installing as root). |
 | `--as-root` | Do **not** drop to a service user; run as root (not recommended). |
+| `--restart` | Restart the Hermes gateway and WebUI, then probe WebUI `/health`. |
 | `--auto-update` | Schedule a weekly `--update` (systemd timer, cron fallback). |
 | `--answers FILE` | Non-interactive; read answers from an `ANS_*` file (see `test/answers.example.env`). |
 
@@ -201,6 +202,7 @@ release tag.)
 
 ```bash
 bash install-hermes-mikrus.sh --update      # upgrade agent + WebUI together (to latest), backs up config first
+bash install-hermes-mikrus.sh --restart     # restart gateway + WebUI and verify WebUI health
 bash install-hermes-mikrus.sh --auto-update  # (at install time) schedule a weekly --update
 bash uninstall-hermes-mikrus.sh             # remove services + proxy + timer, keep data
 bash uninstall-hermes-mikrus.sh --purge     # also delete ~/.hermes (irreversible)
@@ -302,6 +304,17 @@ context window**. So:
 - A small-context model is rejected (`… context window of 16,000 … below the minimum 64,000`).
 - Run **`hermes model`** to pick a valid model from the provider's live catalog — the reliable fix.
 - Big models can take ~15–30 s on the **first** message (cold start), which is normal, not an error.
+
+For NVIDIA, the repository also includes a live-catalog helper:
+
+```bash
+bash pick-nvidia-model.sh
+bash install-hermes-mikrus.sh --restart
+```
+
+It can be launched as `root`: it automatically reads the dedicated `hermes` user's configuration,
+runs verification as that user, and keeps `config.yaml` owned by `hermes`. For a custom service
+account, set `SERVICE_USER=name` when launching it.
 
 Verified NVIDIA picks with ≥64K context: `z-ai/glm-5.2`, `deepseek-ai/deepseek-v4-pro`,
 `meta/llama-3.3-70b-instruct`, `qwen/qwen3.5-122b-a10b`.

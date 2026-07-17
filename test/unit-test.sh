@@ -175,6 +175,11 @@ webui_set_password "$EF" >/dev/null 2>&1
 grep -q '^HERMES_WEBUI_PASSWORD=keepme123$' "$EF" && ok "kept existing password on empty re-run" || bad "password changed on re-run"
 unset HERMES_INSTALL_NONINTERACTIVE ANS_HERMES_WEBUI_PASSWORD
 
+sec "installer CLI: restart mode is documented"
+HELP="$(bash "$REPO_DIR/install-hermes-mikrus.sh" --help)"
+has "$HELP" "--restart" "--help exposes the restart command"
+has "$HELP" "Restart the Hermes gateway and WebUI" "restart scope is explicit"
+
 echo
 sec "Result: ${PASS} PASS / ${FAIL} FAIL"
 (( FAIL == 0 ))

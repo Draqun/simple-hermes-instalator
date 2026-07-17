@@ -5,9 +5,8 @@
 # / parsers), suggest a fast large-context pick, write it to the Hermes config,
 # and verify it with a real request.
 #
-# Run as the Hermes service user, e.g. on Mikrus:
-#   su - hermes -c 'bash /path/to/hermes-mikrus/pick-nvidia-model.sh'
-# then restart the services as root (the script prints the command).
+# Run as root or as the Hermes service user. When run as root, the script
+# automatically uses the dedicated `hermes` account created by the installer.
 #
 # Non-interactive: HERMES_INSTALL_NONINTERACTIVE=1 ANS_PICK=<index|id>.
 
@@ -18,9 +17,44 @@ source "$SCRIPT_DIR/lib/common.sh"
 # shellcheck source=/dev/null
 source "$SCRIPT_DIR/lib/provider.sh"   # _write_model_block
 
-HERMES_HOME="${HERMES_HOME:-$HOME/.hermes}"
+SERVICE_USER="${SERVICE_USER:-}"
+SERVICE_HOME=""
+
+# Match the installer's identity rules. In particular, `sudo bash ...` must not
+# silently switch to /root/.hermes when the actual installation belongs to the
+# dedicated `hermes` service account.
+resolve_runtime_identity() {
+  local current target
+  current="$(id -un)"
+  target="${SERVICE_USER:-$current}"
+  if [[ "$(id -u)" == "0" && -z "$SERVICE_USER" ]] && id hermes &>/dev/null; then
+    target="hermes"
+  fi
+  if [[ "$target" != "$current" && "$(id -u)" != "0" ]]; then
+    die "Only root can select another service user (requested: $target)."
+  fi
+  id "$target" &>/dev/null || die "Service user '$target' does not exist."
+  SERVICE_USER="$target"
+  if [[ "$target" == "$current" ]]; then
+    SERVICE_HOME="${HOME:?HOME must be set}"
+  else
+    SERVICE_HOME="$(getent passwd "$target" 2>/dev/null | cut -d: -f6 || true)"
+    SERVICE_HOME="${SERVICE_HOME:-/home/$target}"
+    log_info "Using Hermes installation owned by '$target' (${SERVICE_HOME}/.hermes)."
+  fi
+}
+
+resolve_runtime_identity
+HERMES_HOME="${HERMES_HOME:-$SERVICE_HOME/.hermes}"
 ENV_FILE="$HERMES_HOME/.env"
 CONFIG_YAML="$HERMES_HOME/config.yaml"
+if [[ -x "$SERVICE_HOME/.local/bin/hermes" ]]; then
+  HERMES_BIN="$SERVICE_HOME/.local/bin/hermes"
+elif [[ -x /usr/local/bin/hermes ]]; then
+  HERMES_BIN="/usr/local/bin/hermes"
+else
+  HERMES_BIN=""
+fi
 NIM="https://integrate.api.nvidia.com/v1"
 
 # --- key ---------------------------------------------------------------------
@@ -32,7 +66,10 @@ fi
 
 # --- catalog -----------------------------------------------------------------
 log_step "Fetching the NVIDIA NIM catalog"
-raw="$(curl --proto '=https' --tlsv1.2 -fsSL -m 30 "$NIM/models" -H "Authorization: Bearer $KEY" || true)"
+# Feed the authorization header through curl's stdin config. Putting it after
+# `-H` would expose the API key in argv/ps while the request is in flight.
+raw="$(printf 'header = "Authorization: Bearer %s"\n' "$KEY" \
+  | curl --proto '=https' --tlsv1.2 -fsSL -m 30 --config - "$NIM/models" || true)"
 [[ -n "$raw" ]] || die "Could not fetch $NIM/models — check the key / network."
 mapfile -t all < <(printf '%s' "$raw" \
   | grep -oE '"id"[[:space:]]*:[[:space:]]*"[^"]*"' | sed -E 's/.*"([^"]*)"[[:space:]]*$/\1/' | sort -u)
@@ -90,22 +127,30 @@ esac
 # --- write + verify ----------------------------------------------------------
 log_info "Setting model.provider=nvidia, model.default=${PICK} in ${CONFIG_YAML}"
 _write_model_block "$CONFIG_YAML" nvidia "$PICK"
+if [[ "$(id -u)" == "0" && "$SERVICE_USER" != "$(id -un)" ]]; then
+  chown "$SERVICE_USER":"$(id -gn "$SERVICE_USER")" "$CONFIG_YAML"
+fi
 
 log_step "Verifying '${PICK}' with a live request (may cold-start ~15–30 s)"
 verified="unknown"
-if have_cmd hermes; then
-  out="$(timeout 150 hermes -z hi 2>&1 || true)"
+if [[ -n "$HERMES_BIN" ]]; then
+  out="$(as_user env HOME="$SERVICE_HOME" HERMES_HOME="$HERMES_HOME" \
+    PATH="$SERVICE_HOME/.local/bin:/usr/local/bin:/usr/bin:/bin" \
+    timeout 150 "$HERMES_BIN" -z hi 2>&1 || true)"
   if   [[ "$out" == *"context window"* ]]; then log_warn "Rejected — context < 64K: $out"; verified="too-small"
   elif [[ "$out" == *"404"* || "$out" == *"not found"* ]]; then log_warn "404 — '${PICK}' not in the catalog anymore. Run again and pick another."; verified="404"
   elif [[ -n "$out" ]]; then log_ok "Works ✔  model replied: ${out}"; verified="ok"
   else log_warn "No reply (likely cold-start). Try 'hermes -z hi' again in a moment."; verified="timeout"
   fi
 else
-  log_warn "hermes CLI not on PATH — skipping verification. Run this as the Hermes service user."
+  log_warn "hermes CLI not found for '$SERVICE_USER' — skipping verification."
 fi
 
 log_step "Done"
 log "  Model set to: ${C_BOLD}${PICK}${C_RESET} (provider: nvidia)"
-log "  Apply it — restart the services as root:"
-log "    systemctl restart hermes-gateway hermes-webui"
-[[ "$verified" == "too-small" || "$verified" == "404" ]] && log_warn "Not usable — re-run and choose a different model."
+log "  Apply it — restart the stack as root:"
+log "    bash $SCRIPT_DIR/install-hermes-mikrus.sh --restart"
+if [[ "$verified" == "too-small" || "$verified" == "404" ]]; then
+  log_warn "Not usable — re-run and choose a different model."
+fi
+exit 0
