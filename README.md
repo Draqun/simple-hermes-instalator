@@ -196,9 +196,12 @@ extra profiles are fine on 3.0 (2 GB); for several, prefer 3.5 (4 GB). The insta
   local test verifies the installer, footprint, and that the stack serves `/health`.
 - Autostart needs real systemd (present on Mikrus). Without it, start the WebUI with
   `~/.hermes/hermes-webui/ctl.sh start`.
-- **Switching provider from the WebUI Settings may not persist** to `config.yaml` for cross-provider
-  model IDs (upstream bug [nesquena/hermes-webui#6131](https://github.com/nesquena/hermes-webui/issues/6131)).
-  Workaround: switch providers with `hermes model` (or edit `~/.hermes/config.yaml` directly).
+- **WebUI provider switch for cross-provider model IDs** — reported and **fixed upstream**
+  ([issue #6131](https://github.com/nesquena/hermes-webui/issues/6131); frontend fix PR #6134 merged
+  to `master`, companion backend fix #6148 open at time of writing). The fix is **not yet in a release
+  tag** (latest is `v0.52.41`, from before the fix), so to get it install the WebUI from `master`
+  (installer's "bleeding edge", or `--webui-version master`). On a tagged/older version, switch
+  providers with `hermes model` instead of the Settings dropdown.
 
 ## License
 

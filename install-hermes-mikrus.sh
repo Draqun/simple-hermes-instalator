@@ -20,10 +20,13 @@
 #   --as-root        Do NOT drop to a service user; run as root (not recommended —
 #                    the agent has a shell tool, so root = full blast radius).
 #   --auto-update    Schedule a weekly `--update` (systemd timer, cron fallback).
+#   --agent-version REF  Pin the agent to a git tag or commit (skips the version prompt).
+#   --webui-version REF  Pin the WebUI to a git tag, branch or commit (skips the prompt).
 #   -h, --help       Show this help.
 #
 # On start you are asked which version to install: latest release tag
-# (recommended), bleeding-edge main/master, or a custom tag/commit.
+# (recommended), bleeding-edge main/master, or a custom tag/commit — unless you
+# pin with --agent-version / --webui-version.
 
 set -euo pipefail
 
@@ -43,7 +46,8 @@ AS_ROOT="no"
 SERVICE_USER=""
 AUTO_UPDATE="no"
 AGENT_REF=""            # git tag/commit for the agent ("" = installer default / main)
-WEBUI_REF="master"      # git tag/branch for the WebUI clone
+WEBUI_REF="master"      # git tag/branch/commit for the WebUI clone
+VERSION_PINNED="no"     # set when --agent-version/--webui-version is passed
 INSTALLER_URL="https://hermes-agent.nousresearch.com/install.sh"
 # SERVICE_HOME / HERMES_HOME / CONFIG_YAML / ENV_FILE / HERMES_BIN are set by
 # resolve_identity() (they depend on the resolved service user).
@@ -68,6 +72,10 @@ parse_args() {
       --service-user) shift; SERVICE_USER="${1:-}" ;;
       --service-user=*) SERVICE_USER="${1#*=}" ;;
       --auto-update) AUTO_UPDATE="yes" ;;
+      --agent-version)  shift; AGENT_REF="${1:-}"; VERSION_PINNED="yes" ;;
+      --agent-version=*) AGENT_REF="${1#*=}"; VERSION_PINNED="yes" ;;
+      --webui-version)  shift; WEBUI_REF="${1:-}"; VERSION_PINNED="yes" ;;
+      --webui-version=*) WEBUI_REF="${1#*=}"; VERSION_PINNED="yes" ;;
       -h|--help)     usage; exit 0 ;;
       *)             die "Unknown flag: $1 (use --help)" ;;
     esac
@@ -223,6 +231,12 @@ gh_latest_tag() {
 # main/master, or a custom tag/commit. Sets AGENT_REF + WEBUI_REF/WEBUI_BRANCH.
 choose_version() {
   log_step "Version to install"
+  # Pinned via --agent-version/--webui-version: skip the prompt, use them as given.
+  if [[ "$VERSION_PINNED" == "yes" ]]; then
+    WEBUI_BRANCH="${WEBUI_REF:-master}"
+    log_ok "Pinned via flags — agent: ${AGENT_REF:-main}, WebUI: ${WEBUI_REF:-master}"
+    return 0
+  fi
   local VERSION_CHOICE=""
   ask_menu VERSION_CHOICE "Which version?" \
     "Latest release tag (recommended)" \

@@ -22,10 +22,15 @@ webui_clone_or_update() {
   if [[ -d "$dir/.git" ]]; then
     log_info "Updating hermes-webui..."
     git -C "$dir" pull --ff-only --quiet || log_warn "Could not fast-forward hermes-webui."
+  elif [[ "$WEBUI_BRANCH" =~ ^[0-9a-f]{7,40}$ ]]; then
+    # A commit SHA: git clone --branch can't take a SHA, so full-clone then checkout.
+    log_info "Cloning hermes-webui at commit ${WEBUI_BRANCH}..."
+    git clone "$WEBUI_REPO" "$dir" --quiet && git -C "$dir" checkout --quiet "$WEBUI_BRANCH" \
+      || { log_warn "Clone/checkout of ${WEBUI_BRANCH} failed."; return 1; }
   else
-    log_info "Cloning hermes-webui..."
+    log_info "Cloning hermes-webui (${WEBUI_BRANCH})..."
     git clone --depth 1 --branch "$WEBUI_BRANCH" "$WEBUI_REPO" "$dir" --quiet \
-      || { log_warn "Clone failed."; return 1; }
+      || { log_warn "Clone of ${WEBUI_BRANCH} failed."; return 1; }
   fi
   log_ok "hermes-webui at $dir"
 }
