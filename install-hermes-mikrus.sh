@@ -182,6 +182,12 @@ ensure_prereqs() {
   # The WebUI launcher (bootstrap.py / ctl.sh) needs a system python3 to boot
   # before re-execing under the agent venv. Usually present on Mikrus.
   have_cmd python3 || missing+=("python3")
+  # Debian/Ubuntu (Mikrus) split ensurepip — needed to bootstrap pip INSIDE a
+  # venv — into the python3-venv package. A bare python3 passes have_cmd but
+  # `python3 -m venv` then yields a pip-LESS venv, so the agent/WebUI dependency
+  # install dies with "No module named pip" (systemd crash-loop → 502 behind the
+  # proxy). Detect it via ensurepip and pull python3-venv (+ pip) when absent.
+  if ! python3 -m ensurepip --version >/dev/null 2>&1; then missing+=("python3-venv" "python3-pip"); fi
   if (( ${#missing[@]} )); then
     log_info "Installing: ${missing[*]}"
     if have_cmd apt-get; then
