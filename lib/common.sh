@@ -159,6 +159,63 @@ fetch() {
   curl --proto '=https' --tlsv1.2 -fsSL "$url"
 }
 
+# Packages the upstream installer would otherwise stop and ask about. It probes
+# rg/ffmpeg by command and gcc/python3-dev/libffi-dev by dpkg, then shells out
+# to `sudo apt-get` — which a passwordless service account cannot answer. We
+# install them as root up front so that step finds nothing left to do.
+missing_agent_build_deps() {
+  local missing=() p
+  have_cmd rg     || missing+=("ripgrep")
+  have_cmd ffmpeg || missing+=("ffmpeg")
+  for p in gcc python3-dev libffi-dev; do
+    if ! dpkg -s "$p" >/dev/null 2>&1; then
+      missing+=("build-essential" "python3-dev" "libffi-dev")
+      break
+    fi
+  done
+  (( ${#missing[@]} )) && printf '%s\n' "${missing[@]}"
+  return 0
+}
+
+# Install whatever missing_agent_build_deps found, as root, best-effort:
+# ripgrep/ffmpeg only degrade optional tools, and the build tools merely make
+# source-built wheels possible. Never fatal — the agent installs without them.
+ensure_agent_build_deps() {
+  local -a deps=()
+  mapfile -t deps < <(missing_agent_build_deps)
+  (( ${#deps[@]} )) || return 0
+  if ! have_cmd apt-get; then
+    log_warn "No apt-get — install manually if the agent needs them: ${deps[*]}"
+    return 0
+  fi
+  log_info "Installing agent build deps: ${deps[*]}"
+  DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=180 update -qq
+  DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=180 install -y -qq "${deps[@]}" \
+    || log_warn "Could not install: ${deps[*]} (the agent still installs; some tools may be missing)."
+  return 0
+}
+
+# run_upstream_installer SCRIPT [FLAGS...] — run the official Hermes installer
+# as the service user with NO controlling terminal.
+#
+# The upstream installer prompts through /dev/tty, not stdin, so `</dev/null`
+# alone does not make it non-interactive: run from a terminal it blocks forever
+# on "Install build tools?" and "install the gateway as a background service?".
+# Detached from a tty it takes the safe path by itself — it skips the gateway
+# service (ours is already installed, with hardening drop-ins it would clobber)
+# and the sudo package installs (ensure_prereqs does those as root).
+run_upstream_installer() {
+  local script="$1"; shift
+  local -a cmd=(env HOME="${SERVICE_HOME:-$HOME}" HERMES_HOME="$HERMES_HOME" bash "$script" "$@")
+  # setsid detaches from the controlling terminal; --wait keeps the exit status.
+  if have_cmd setsid && setsid --help 2>&1 | grep -q -- '--wait'; then
+    as_user setsid --wait "${cmd[@]}" </dev/null
+  else
+    log_warn "setsid --wait unavailable — the upstream installer may prompt on this terminal."
+    as_user "${cmd[@]}" </dev/null
+  fi
+}
+
 # Generate a strong URL-safe password (used when the user does not provide one).
 gen_password() {
   if have_cmd openssl; then

@@ -17,11 +17,59 @@ WEBUI_BRANCH="master"
 # webui_dir -> where we clone the WebUI (next to the agent, per its discovery).
 webui_dir() { echo "${HERMES_HOME:-$HOME/.hermes}/hermes-webui"; }
 
+# A crashed/killed git leaves .git/index.lock behind and every later command in
+# that repo fails with "Unable to create index.lock" — silently freezing the
+# WebUI at whatever commit it was on. Clear it when no git process holds it.
+# Without `fuser` we cannot tell, and we clear it anyway: an update owns this
+# checkout, and a concurrent git here would be the anomaly, not the lock.
+webui_clear_stale_lock() {
+  local dir="$1"
+  local lock="$dir/.git/index.lock"
+  [[ -e "$lock" ]] || return 0
+  if have_cmd fuser && fuser "$lock" >/dev/null 2>&1; then
+    log_warn "hermes-webui: $lock is held by a running git — leaving it alone."
+    return 1
+  fi
+  log_warn "hermes-webui: removing an orphaned $lock (left by a crashed git)."
+  rm -f "$lock"
+}
+
+# `git pull --ff-only` refuses on a detached HEAD ("You are not currently on a
+# branch"), which is where a `--commit`-pinned or hand-inspected checkout ends
+# up. Reattach to the tracked branch first, but only when that loses nothing:
+# if HEAD carries commits the branch does not have, keep it and say so.
+webui_reattach_head() {
+  local dir="$1" branch="$2"
+  git -C "$dir" symbolic-ref -q HEAD >/dev/null && return 0
+  if ! git -C "$dir" rev-parse --verify --quiet "$branch" >/dev/null; then
+    log_warn "hermes-webui: detached HEAD and no local '$branch' — leaving it pinned."
+    return 1
+  fi
+  if ! git -C "$dir" merge-base --is-ancestor HEAD "$branch" \
+     && ! git -C "$dir" merge-base --is-ancestor "$branch" HEAD; then
+    log_warn "hermes-webui: detached HEAD has commits '$branch' lacks — leaving it pinned."
+    return 1
+  fi
+  log_info "hermes-webui: detached HEAD — reattaching to '$branch'."
+  git -C "$dir" checkout --quiet "$branch" \
+    || { log_warn "hermes-webui: could not check out '$branch'."; return 1; }
+}
+
 webui_clone_or_update() {
   local dir; dir="$(webui_dir)"
   if [[ -d "$dir/.git" ]]; then
+    webui_clear_stale_lock "$dir" || true
+    # A SHA pin is meant to stay detached on that commit: nothing to pull, and
+    # "could not fast-forward" would be a false alarm.
+    if [[ "$WEBUI_BRANCH" =~ ^[0-9a-f]{7,40}$ ]] \
+       && [[ "$(git -C "$dir" rev-parse HEAD 2>/dev/null)" == "$WEBUI_BRANCH"* ]]; then
+      log_ok "hermes-webui pinned at ${WEBUI_BRANCH:0:12} — leaving it as is."
+      return 0
+    fi
     log_info "Updating hermes-webui..."
-    git -C "$dir" pull --ff-only --quiet || log_warn "Could not fast-forward hermes-webui."
+    webui_reattach_head "$dir" "$WEBUI_BRANCH" || true
+    git -C "$dir" pull --ff-only --quiet \
+      || log_warn "Could not fast-forward hermes-webui (local commits or a diverged branch — resolve in $dir)."
   elif [[ "$WEBUI_BRANCH" =~ ^[0-9a-f]{7,40}$ ]]; then
     # A commit SHA: git clone --branch can't take a SHA, so full-clone then checkout.
     log_info "Cloning hermes-webui at commit ${WEBUI_BRANCH}..."

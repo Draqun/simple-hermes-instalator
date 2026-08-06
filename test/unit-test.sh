@@ -185,6 +185,136 @@ HELP="$(bash "$REPO_DIR/install-hermes-mikrus.sh" --help)"
 has "$HELP" "--restart" "--help exposes the restart command"
 has "$HELP" "Restart the Hermes gateway and WebUI" "restart scope is explicit"
 
+# --- upstream installer: never block on a /dev/tty prompt --------------------
+# The upstream installer asks through /dev/tty, so redirecting stdin is not
+# enough: an --update run from a terminal (or a timer that inherits one) hangs
+# on "Install build tools?" / "install the gateway as a background service?".
+sec "run_upstream_installer: no controlling terminal for the upstream script"
+FAKE_UP="$TMP/fake-upstream.sh"
+cat > "$FAKE_UP" <<'EOS'
+#!/usr/bin/env bash
+if (: </dev/tty) 2>/dev/null; then echo "TTY_AVAILABLE"; else echo "NO_TTY"; fi
+echo "ARGS:$*"
+exit 7
+EOS
+chmod +x "$FAKE_UP"
+if have_cmd script; then
+  # Run the probe under a real pty, otherwise "no tty" proves nothing.
+  probe="$(script -qec "bash $FAKE_UP baseline" /dev/null 2>/dev/null | tr -d '\r')"
+  has "$probe" "TTY_AVAILABLE" "probe is meaningful (a tty exists without the helper)"
+  up_out="$(script -qec "cd $REPO_DIR && NO_COLOR=1 SERVICE_HOME=$TMP HERMES_HOME=$TMP/.hermes bash -c 'source lib/common.sh; run_upstream_installer $FAKE_UP --skip-setup; echo RC=\$?'" /dev/null 2>/dev/null | tr -d '\r')"
+  has "$up_out" "NO_TTY" "upstream script sees no tty (its prompts self-skip)"
+  has "$up_out" "ARGS:--skip-setup" "passes flags through unchanged"
+  has "$up_out" "RC=7" "propagates the upstream exit status"
+else
+  log_warn "skipping run_upstream_installer tty test (no 'script' command)"
+fi
+
+sec "missing_agent_build_deps: pre-empt the upstream sudo prompts"
+# Upstream probes rg/ffmpeg by command and gcc/python3-dev/libffi-dev by dpkg;
+# whatever is missing there becomes a sudo prompt we cannot answer.
+deps_none="$(cd "$REPO_DIR" && bash -c 'source lib/common.sh
+  have_cmd() { return 1; }; dpkg() { return 1; }
+  missing_agent_build_deps' 2>/dev/null)"
+for p in ripgrep ffmpeg build-essential python3-dev libffi-dev; do
+  has "$deps_none" "$p" "lists $p when absent"
+done
+deps_all="$(cd "$REPO_DIR" && bash -c 'source lib/common.sh
+  have_cmd() { return 0; }; dpkg() { return 0; }
+  missing_agent_build_deps' 2>/dev/null)"
+[[ -z "$deps_all" ]] && ok "lists nothing when everything is present" || bad "wanted empty, got '$deps_all'"
+
+sec "ensure_agent_build_deps: installs what is missing, stays quiet otherwise"
+mkdir -p "$TMP/bin"
+cat > "$TMP/bin/apt-get" <<EOS
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$TMP/apt-calls.log"
+EOS
+chmod +x "$TMP/bin/apt-get"
+: > "$TMP/apt-calls.log"
+( cd "$REPO_DIR" && PATH="$TMP/bin:$PATH" bash -c 'source lib/common.sh
+  have_cmd() { [[ "$1" == "apt-get" ]] && return 0; return 1; }
+  dpkg() { return 0; }
+  ensure_agent_build_deps' ) >/dev/null 2>&1
+grep -q -- "install .*ripgrep" "$TMP/apt-calls.log" && ok "apt-get installs the missing package" || bad "no apt-get install for ripgrep"
+: > "$TMP/apt-calls.log"
+( cd "$REPO_DIR" && PATH="$TMP/bin:$PATH" bash -c 'source lib/common.sh
+  have_cmd() { return 0; }
+  dpkg() { return 0; }
+  ensure_agent_build_deps' ) >/dev/null 2>&1
+[[ ! -s "$TMP/apt-calls.log" ]] && ok "no apt-get run when nothing is missing" || bad "ran apt-get needlessly: $(cat "$TMP/apt-calls.log")"
+
+# --- WebUI update: survive the states a long-lived install drifts into -------
+# Builds a local origin + a checkout that is one commit behind it.
+make_webui_fixture() {
+  local root="$1"
+  rm -rf "$root"; mkdir -p "$root/home/.hermes"
+  git init -q --bare -b master "$root/origin.git"
+  git clone -q "$root/origin.git" "$root/seed" 2>/dev/null
+  ( cd "$root/seed"
+    echo one > f.txt; git add f.txt
+    git -c user.name=t -c user.email=t@e commit -qm one
+    git push -q origin master ) >/dev/null 2>&1
+  git clone -q "$root/origin.git" "$root/home/.hermes/hermes-webui" 2>/dev/null
+  ( cd "$root/seed"
+    echo two >> f.txt
+    git -c user.name=t -c user.email=t@e commit -qam two
+    git push -q origin master ) >/dev/null 2>&1
+}
+webui_fixture_synced() {  # checkout HEAD == origin master?
+  local root="$1"
+  [[ "$(git -C "$root/home/.hermes/hermes-webui" rev-parse HEAD)" \
+     == "$(git -C "$root/origin.git" rev-parse master)" ]]
+}
+
+sec "webui_clone_or_update: recovers from a stale index.lock"
+FX="$TMP/wu-lock"; make_webui_fixture "$FX"
+: > "$FX/home/.hermes/hermes-webui/.git/index.lock"
+( HERMES_HOME="$FX/home/.hermes" WEBUI_REPO="$FX/origin.git" WEBUI_BRANCH=master
+  webui_clone_or_update ) >/dev/null 2>&1
+[[ ! -e "$FX/home/.hermes/hermes-webui/.git/index.lock" ]] \
+  && ok "clears the orphaned lock" || bad "stale index.lock left behind"
+webui_fixture_synced "$FX" && ok "updates to origin despite the lock" || bad "checkout still behind origin"
+
+sec "webui_clear_stale_lock: works standalone (no caller-scope leakage)"
+FXL="$TMP/wu-lock-direct"; make_webui_fixture "$FXL"
+: > "$FXL/home/.hermes/hermes-webui/.git/index.lock"
+( cd "$REPO_DIR" && bash -c 'source lib/common.sh; source lib/webui.sh
+  webui_clear_stale_lock "$1"' _ "$FXL/home/.hermes/hermes-webui" ) >/dev/null 2>&1
+[[ ! -e "$FXL/home/.hermes/hermes-webui/.git/index.lock" ]] \
+  && ok "removes the lock when called directly" || bad "lock survived a standalone call"
+
+sec "webui_clone_or_update: reattaches a detached HEAD before pulling"
+FX2="$TMP/wu-detached"; make_webui_fixture "$FX2"
+git -C "$FX2/home/.hermes/hermes-webui" checkout -q --detach HEAD
+( HERMES_HOME="$FX2/home/.hermes" WEBUI_REPO="$FX2/origin.git" WEBUI_BRANCH=master
+  webui_clone_or_update ) >/dev/null 2>&1
+[[ "$(git -C "$FX2/home/.hermes/hermes-webui" symbolic-ref -q HEAD)" == "refs/heads/master" ]] \
+  && ok "back on the tracked branch" || bad "still detached"
+webui_fixture_synced "$FX2" && ok "fast-forwards to origin" || bad "checkout still behind origin"
+
+sec "webui_clone_or_update: a commit pin stays pinned, without false alarms"
+FXP="$TMP/wu-pinned"; make_webui_fixture "$FXP"
+PIN="$(git -C "$FXP/home/.hermes/hermes-webui" rev-parse HEAD)"
+git -C "$FXP/home/.hermes/hermes-webui" checkout -q --detach "$PIN"
+pin_out="$( HERMES_HOME="$FXP/home/.hermes" WEBUI_REPO="$FXP/origin.git" WEBUI_BRANCH="$PIN" \
+  webui_clone_or_update 2>&1 )"
+[[ "$(git -C "$FXP/home/.hermes/hermes-webui" rev-parse HEAD)" == "$PIN" ]] \
+  && ok "stays on the pinned commit" || bad "pin was moved"
+grep -qi "reattach" <<<"$pin_out" && bad "claims to reattach a deliberate pin" || ok "no misleading reattach message"
+grep -qi "could not fast-forward" <<<"$pin_out" && bad "warns about a pin it was told to keep" || ok "no false ff-only warning"
+
+sec "webui_clone_or_update: leaves local commits alone (no silent data loss)"
+FX3="$TMP/wu-diverged"; make_webui_fixture "$FX3"
+( cd "$FX3/home/.hermes/hermes-webui"
+  echo local > local.txt; git add local.txt
+  git -c user.name=t -c user.email=t@e commit -qm "local work" ) >/dev/null 2>&1
+LOCAL_SHA="$(git -C "$FX3/home/.hermes/hermes-webui" rev-parse HEAD)"
+( HERMES_HOME="$FX3/home/.hermes" WEBUI_REPO="$FX3/origin.git" WEBUI_BRANCH=master
+  webui_clone_or_update ) >/dev/null 2>&1
+[[ "$(git -C "$FX3/home/.hermes/hermes-webui" rev-parse HEAD)" == "$LOCAL_SHA" ]] \
+  && ok "keeps the diverged commit instead of resetting" || bad "local commit was discarded"
+
 echo
 sec "Result: ${PASS} PASS / ${FAIL} FAIL"
 (( FAIL == 0 ))

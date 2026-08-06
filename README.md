@@ -212,6 +212,17 @@ bash uninstall-hermes-mikrus.sh --purge     # also delete ~/.hermes (irreversibl
 restarts services and probes `/health`. `--auto-update` (opt-in, install time) installs a weekly
 systemd timer (`hermes-update.timer`; cron fallback) that runs `--update` for you.
 
+`--update` is fully unattended, by design and in two places:
+
+- The upstream installer prompts through `/dev/tty` (not stdin), so we run it detached from the
+  terminal. It then skips, on its own, exactly the steps that are ours to own: the gateway service
+  (already installed here, with hardening drop-ins) and its `sudo` package installs — we do those
+  as root beforehand, so a new release's build dep never turns into a password prompt.
+- The WebUI update self-heals the two states a long-lived checkout drifts into: an orphaned
+  `.git/index.lock` left by a crashed git, and a detached HEAD. Both used to freeze the WebUI at
+  its current commit while the update reported success. Local commits are never discarded — a
+  genuinely diverged checkout is reported and left for you to resolve.
+
 ## Testing locally (before buying a Mikrus)
 
 A memory-capped container mimics Mikrus 3.0 (2 GB RAM, no swap, 1 CPU):

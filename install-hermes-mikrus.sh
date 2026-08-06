@@ -199,6 +199,10 @@ ensure_prereqs() {
       die "Missing ${missing[*]} and no apt-get to install them."
     fi
   fi
+  # Agent build/runtime deps the upstream installer would otherwise prompt for
+  # (it asks via /dev/tty and then needs sudo as the service user). We are root
+  # here, so install them now and let that step find nothing to do.
+  ensure_agent_build_deps
   log_ok "Prerequisites present."
 }
 
@@ -298,7 +302,7 @@ install_agent() {
   fi
   # Install AS the service user (per-user layout under its home), not root.
   chmod 755 "$tmp"   # the public installer must be readable/executable by the service user
-  as_user env HOME="$SERVICE_HOME" HERMES_HOME="$HERMES_HOME" bash "$tmp" "${flags[@]}" </dev/null \
+  run_upstream_installer "$tmp" "${flags[@]}" \
     || die "Hermes agent installer failed."
   rm -f "$tmp"
   resolve_hermes_bin
@@ -539,15 +543,21 @@ do_update() {
   [[ -f "$ENV_FILE" ]] && cp -p "$ENV_FILE" "$backup/"
   log_ok "Backed up config + secrets to $backup"
 
+  # A new agent release can need a build dep the box does not have yet (the
+  # upstream installer would ask for sudo it cannot get). Cover it while we
+  # still have root; harmless when everything is already installed.
+  [[ "$(id -u)" == "0" ]] && ensure_agent_build_deps
+
   # Upgrade both together (compatibility policy of the WebUI). Mirror the
-  # install flags: skip the interactive setup, keep the original browser choice,
-  # and feed /dev/null so the upstream installer never blocks on a prompt.
+  # install flags: skip the interactive setup and keep the original browser
+  # choice. run_upstream_installer detaches it from the terminal, so its
+  # /dev/tty prompts never block an unattended run (see lib/common.sh).
   log_info "Upgrading the agent (re-running the official installer)..."
   local -a uflags=(--skip-setup)
   grep -q '^HERMES_ENABLE_BROWSER_TOOLS=true' "$ENV_FILE" 2>/dev/null || uflags+=(--skip-browser)
   local tmp; tmp="$(mktemp)"; chmod 755 "$tmp"
   if fetch "$INSTALLER_URL" > "$tmp"; then
-    as_user env HOME="$SERVICE_HOME" HERMES_HOME="$HERMES_HOME" bash "$tmp" "${uflags[@]}" </dev/null \
+    run_upstream_installer "$tmp" "${uflags[@]}" \
       || log_warn "Agent update step failed."
   else
     log_warn "Could not download the installer."
